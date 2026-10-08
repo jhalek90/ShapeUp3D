@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>ShapeUp3d</title>
+  </head>
+  <body>
+    <div id="app">
+      <header id="toolbar" aria-label="Tools"></header>
+      <main id="viewport"></main>
+      <footer id="statusbar">
+        <span id="status-hint"></span>
+        <label id="units-label">
+          Units
+          <select id="units-select"></select>
+        </label>
+        <label id="vcb-label">
+          <span id="vcb-name">Measurements</span>
+          <input id="vcb" type="text" autocomplete="off" spellcheck="false" />
+        </label>
+      </footer>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
