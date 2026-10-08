@@ -38,7 +38,10 @@ npm run build      # typecheck + production build into dist/
 - `Q` Rotate: click center, click reference, click/type angle (snaps to 15°). Arrow keys pick the axis.
 - `Space` Select: click, double/triple-click, drag boxes; Ctrl add, Shift toggle. `Delete` erases.
 - `E` Eraser: click/drag over edges. Shift hides, Ctrl softens.
-- `Ctrl+Z` / `Ctrl+Y` undo / redo
+- `S` Scale: drag a grip on the selection's box (corners uniform), or type a factor / size like `50mm`.
+- `T` Tape Measure: measure; from an edge leaves a parallel guide, from a point a guide point. Protractor makes angled guides.
+- File menu: New, Open (`Ctrl+O`), Save (`Ctrl+S`), Save As (`Ctrl+Shift+S`). Work is autosaved in the browser and restored on reload.
+- `Ctrl+Z` / `Ctrl+Y` undo / redo, `Ctrl+A` select all, `Ctrl+Shift+A` select none
 
 ## License
 

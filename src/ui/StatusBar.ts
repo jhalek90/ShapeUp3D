@@ -44,6 +44,11 @@ export class StatusBar {
     });
   }
 
+  /** Shows a unit in the picker (e.g. after opening a file). */
+  setUnit(unit: LengthUnit): void {
+    this.units.value = unit;
+  }
+
   setHint(text: string): void {
     this.hint.textContent = text;
   }

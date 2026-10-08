@@ -185,3 +185,16 @@ describe('offsetFace', () => {
     expect(JSON.stringify(mesh.toJSON())).toBe(before);
   });
 });
+
+describe('scaling curves', () => {
+  it('a uniformly scaled circle stays a circle with the new radius; a stretched one does not', async () => {
+    const { scaling } = await import('./transform');
+    const mesh = new Mesh();
+    const { curve } = circle(mesh, v(0, 0), 10);
+    transformVertices(mesh, mesh.vertices.values(), scaling(v(0, 0), new Vec3(2, 2, 2)));
+    expect(mesh.curves.get(curve)?.radius).toBeCloseTo(20);
+    transformVertices(mesh, mesh.vertices.values(), scaling(v(0, 0), new Vec3(2, 1, 1)));
+    expect(mesh.curves.get(curve)?.center).toBeUndefined();
+    expect(mesh.validate()).toEqual([]);
+  });
+});

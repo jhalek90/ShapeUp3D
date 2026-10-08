@@ -13,7 +13,7 @@ const SIDES = /^\s*(\d+)\s*s\s*$/i;
 const RADIUS = /^(.*?)\s*r\s*$/i;
 /** Pixels within which the bulge snaps to a half circle. */
 const HALF_CIRCLE_PX = 8;
-const SNAPS = new Set(['endpoint', 'midpoint', 'center', 'intersection', 'origin', 'on-edge', 'on-axis']);
+const SNAPS = new Set(['endpoint', 'midpoint', 'center', 'intersection', 'guide-point', 'on-guide', 'origin', 'on-edge', 'on-axis']);
 
 /**
  * 2-Point Arc: click the start, click the end, then pull out the bulge and click

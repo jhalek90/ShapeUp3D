@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { closestLineParam, closestPointOnSegment, closestSegmentSegment, Plane, TOL, Vec3, type XYZ } from '../core/math';
-import { faceContainsPoint, type Edge, type Face, type Mesh, type Vertex } from '../core/Mesh';
+import { faceContainsPoint, type Edge, type Face, type Guide, type Mesh, type Vertex } from '../core/Mesh';
 import type { CameraController } from '../viewport/CameraController';
 
 // Inference ("snapping"): turns a cursor position into a meaningful 3D point.
@@ -29,8 +29,10 @@ export type InferenceKind =
   | 'midpoint'
   | 'center'
   | 'intersection'
+  | 'guide-point'
   | 'origin'
   | 'on-edge'
+  | 'on-guide'
   | 'axis'
   | 'on-face'
   | 'on-axis'
@@ -44,6 +46,7 @@ export interface Inference {
   vertex?: Vertex;
   edge?: Edge;
   face?: Face;
+  guide?: Guide;
   /** For 'axis' / 'on-axis' and axis locks. */
   axis?: Axis;
   /** When a snapped point was projected onto a lock, the original point (drawn as a dotted guide). */
@@ -120,6 +123,7 @@ export class InferenceEngine {
     const origin = Vec3.from(q.ray.origin);
     const dir = Vec3.from(q.ray.direction).normalize();
     const cursor = { x: q.x, y: q.y };
+    this.cursorRay = { origin, dir };
 
     const faceHit = this.raycastFaces(origin, dir);
     const visible = notBehind(faceHit?.face, dir);
@@ -149,6 +153,7 @@ export class InferenceEngine {
   pick(q: Pick<InferenceQuery, 'x' | 'y' | 'ray'>, only?: 'edge' | 'face'): { edge?: Edge; face?: Face; point: Vec3 } | null {
     const origin = Vec3.from(q.ray.origin);
     const dir = Vec3.from(q.ray.direction).normalize();
+    this.cursorRay = { origin, dir };
     const faceHit = this.raycastFaces(origin, dir);
     if (only !== 'face') {
       const edge = this.nearestEdge({ x: q.x, y: q.y }, origin, dir, notBehind(faceHit?.face, dir));
@@ -198,66 +203,126 @@ export class InferenceEngine {
       const center = c.center;
       if (center) consider(center, () => ({ point: center, kind: 'center', tooltip: 'Center' }));
     }
+    for (const g of this.mesh.guides.values()) {
+      if (g.kind === 'point') consider(g.point, () => ({ point: g.point, kind: 'guide-point', tooltip: 'Guide Point', guide: g }));
+    }
     consider(Vec3.ZERO, () => ({ point: Vec3.ZERO, kind: 'origin', tooltip: 'Origin' }));
     this.intersections(cursor, consider);
     return best;
   }
 
   /**
-   * Intersection points near the cursor: edges crossing each other (geometry that
-   * wasn't drawn into each other, e.g. after a move) and edges passing through faces.
+   * Intersection points near the cursor: edges and guide lines crossing each other
+   * (geometry that wasn't drawn into each other, e.g. after a move, or guides
+   * crossing edges), and edges or guides passing through faces.
    */
   private intersections(cursor: { x: number; y: number }, consider: (p: Vec3, make: () => Inference) => void): void {
-    const near: Edge[] = [];
-    for (const e of this.mesh.edges.values()) {
-      if (!isVisibleEdge(e)) continue;
-      const a = this.view.project(e.v0.pos);
-      const b = this.view.project(e.v1.pos);
-      if (a && b && distanceToSegment2D(cursor, a, b) < POINT_PX) near.push(e);
-    }
-    const isEnd = (p: Vec3, e: Edge) => p.equals(e.v0.pos) || p.equals(e.v1.pos);
-    const hit = (p: Vec3, edge: Edge): Inference => ({ point: p, kind: 'intersection', tooltip: 'Intersection', edge });
+    const near = this.linears().filter((l) => {
+      const d = this.screenDistance(cursor, l);
+      return d !== null && d < POINT_PX;
+    });
+    const isEnd = (p: Vec3, l: Linear) => l.segment && (p.equals(l.a) || p.equals(l.a.add(l.dir)));
+    const hit = (p: Vec3, l: Linear): Inference => ({ point: p, kind: 'intersection', tooltip: 'Intersection', edge: l.edge, guide: l.guide });
     for (let i = 0; i < near.length; i++) {
       for (let j = i + 1; j < near.length; j++) {
         const a = near[i]!;
         const b = near[j]!;
-        const c = closestSegmentSegment(a.v0.pos, a.v1.pos, b.v0.pos, b.v1.pos);
-        if (c.distance > TOL) continue;
-        const p = c.p.lerp(c.q, 0.5);
+        const p = meet(a, b);
+        if (!p) continue;
         if (isEnd(p, a) && isEnd(p, b)) continue; // a shared corner is just an endpoint
         consider(p, () => hit(p, a));
       }
     }
-    // Edges passing through faces.
-    for (const e of near) {
+    // Edges and guides passing through faces.
+    for (const l of near) {
       for (const f of this.mesh.faces.values()) {
         const plane = f.plane;
-        const s0 = plane.signedDistance(e.v0.pos);
-        const s1 = plane.signedDistance(e.v1.pos);
-        if (s0 * s1 >= 0 || Math.abs(s0) <= TOL || Math.abs(s1) <= TOL) continue;
-        const p = e.v0.pos.lerp(e.v1.pos, s0 / (s0 - s1));
-        if (faceContainsPoint(f, p)) consider(p, () => hit(p, e));
+        const denom = plane.normal.dot(l.dir);
+        if (Math.abs(denom) < 1e-12) continue;
+        const t = -plane.signedDistance(l.a) / denom;
+        const p = l.a.addScaled(l.dir, t);
+        if (l.segment && (p.distanceTo(l.a) <= TOL || p.distanceTo(l.a.add(l.dir)) <= TOL || t < 0 || t > 1)) continue;
+        if (faceContainsPoint(f, p)) consider(p, () => hit(p, l));
       }
     }
+  }
+
+  /** Visible edges (segments) and guide lines (infinite), for line snapping. */
+  private linears(): Linear[] {
+    const out: Linear[] = [];
+    for (const e of this.mesh.edges.values()) {
+      if (isVisibleEdge(e)) out.push({ a: e.v0.pos, dir: e.v1.pos.sub(e.v0.pos), segment: true, edge: e });
+    }
+    for (const g of this.mesh.guides.values()) {
+      if (g.kind === 'line') out.push({ a: g.point, dir: g.dir, segment: false, guide: g });
+    }
+    return out;
+  }
+
+  /** Screen distance from the cursor to an edge or guide line, or null if it's off screen. */
+  private screenDistance(cursor: { x: number; y: number }, l: Linear): number | null {
+    if (l.segment) {
+      const a = this.view.project(l.a);
+      const b = this.view.project(l.a.add(l.dir));
+      return a && b ? distanceToSegment2D(cursor, a, b) : null;
+    }
+    // An infinite line: project a short piece of it around the point nearest the cursor.
+    const around = l.a.addScaled(l.dir, this.lineParamNearCursor(l) ?? 0);
+    const step = l.dir.normalize().scale(this.view.focusDistance * 0.05);
+    const a = this.view.project(around.sub(step));
+    const b = this.view.project(around.add(step));
+    if (!a || !b) return null;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-9) return Math.hypot(cursor.x - a.x, cursor.y - a.y);
+    return Math.abs((cursor.x - a.x) * dy - (cursor.y - a.y) * dx) / len;
+  }
+
+  private cursorRay: { origin: Vec3; dir: Vec3 } | null = null;
+
+  private lineParamNearCursor(l: Linear): number | null {
+    const ray = this.cursorRay;
+    return ray ? closestLineParam(l.a, l.dir, ray.origin, ray.dir) : null;
   }
 
   private nearestEdge(cursor: { x: number; y: number }, origin: Vec3, dir: Vec3, visible: (p: Vec3) => boolean): Inference | null {
     let best: Inference | null = null;
     let bestDist = EDGE_PX;
-    for (const e of this.mesh.edges.values()) {
-      if (!isVisibleEdge(e)) continue;
-      const a = this.view.project(e.v0.pos);
-      const b = this.view.project(e.v1.pos);
-      if (!a || !b) continue;
-      const d = distanceToSegment2D(cursor, a, b);
-      if (d >= bestDist) continue;
-      // The 3D point on the edge nearest the cursor ray.
-      const edgeDir = e.v1.pos.sub(e.v0.pos);
-      const s = closestLineParam(e.v0.pos, edgeDir, origin, dir);
-      const p = e.v0.pos.lerp(e.v1.pos, Math.min(1, Math.max(0, s ?? 0)));
+    for (const l of this.linears()) {
+      const d = this.screenDistance(cursor, l);
+      if (d === null || d >= bestDist) continue;
+      // The 3D point on the edge / guide nearest the cursor ray.
+      let s = closestLineParam(l.a, l.dir, origin, dir) ?? 0;
+      if (l.segment) s = Math.min(1, Math.max(0, s));
+      const p = l.a.addScaled(l.dir, s);
       if (!visible(p)) continue;
       bestDist = d;
-      best = { point: p, kind: 'on-edge', tooltip: 'On Edge', edge: e };
+      best = l.edge ? { point: p, kind: 'on-edge', tooltip: 'On Edge', edge: l.edge } : { point: p, kind: 'on-guide', tooltip: 'On Guide', guide: l.guide };
+    }
+    return best;
+  }
+
+  /** The guide (line or point) under the cursor, for erasing. */
+  pickGuide(q: Pick<InferenceQuery, 'x' | 'y' | 'ray'>): Guide | null {
+    const origin = Vec3.from(q.ray.origin);
+    const dir = Vec3.from(q.ray.direction).normalize();
+    this.cursorRay = { origin, dir };
+    const cursor = { x: q.x, y: q.y };
+    let best: Guide | null = null;
+    let bestDist = EDGE_PX;
+    for (const g of this.mesh.guides.values()) {
+      let d: number | null;
+      if (g.kind === 'point') {
+        const s = this.view.project(g.point);
+        d = s ? Math.hypot(s.x - cursor.x, s.y - cursor.y) : null;
+      } else {
+        d = this.screenDistance(cursor, { a: g.point, dir: g.dir, segment: false, guide: g });
+      }
+      if (d !== null && d < bestDist) {
+        bestDist = d;
+        best = g;
+      }
     }
     return best;
   }
@@ -315,6 +380,11 @@ export class InferenceEngine {
           const p = lock.origin.addScaled(ldir, s);
           return result(p, closestPointOnSegment(p, e.v0.pos, e.v1.pos).point, 'On Edge');
         }
+      }
+      if (snap?.kind === 'on-guide' && snap.guide?.kind === 'line') {
+        const g = snap.guide;
+        const s = closestLineParam(lock.origin, ldir, g.point, g.dir);
+        if (s !== null) return result(lock.origin.addScaled(ldir, s), undefined, 'On Guide');
       }
       if (snap) return result(lock.origin.addScaled(ldir, snap.point.sub(lock.origin).dot(ldir)), snap.point, snap.tooltip);
       if (face) {
@@ -388,6 +458,31 @@ function notBehind(face: Face | undefined, rayDir: Vec3): (p: Vec3) => boolean {
 function pointOnLineNearRay(a: Vec3, dir: Vec3, origin: Vec3, rayDir: Vec3): Vec3 | null {
   const s = closestLineParam(a, dir, origin, rayDir);
   return s === null ? null : a.addScaled(dir, s);
+}
+
+/** An edge (segment from a to a + dir) or a guide line (infinite through a along dir). */
+interface Linear {
+  a: Vec3;
+  dir: Vec3;
+  segment: boolean;
+  edge?: Edge;
+  guide?: Guide;
+}
+
+/** Where two edges / guide lines meet (within tolerance), or null. */
+function meet(l1: Linear, l2: Linear): Vec3 | null {
+  if (l1.segment && l2.segment) {
+    const c = closestSegmentSegment(l1.a, l1.a.add(l1.dir), l2.a, l2.a.add(l2.dir));
+    return c.distance <= TOL ? c.p.lerp(c.q, 0.5) : null;
+  }
+  const s = closestLineParam(l1.a, l1.dir, l2.a, l2.dir);
+  const t = closestLineParam(l2.a, l2.dir, l1.a, l1.dir);
+  if (s === null || t === null) return null;
+  const inRange = (l: Linear, x: number) => !l.segment || (x >= -1e-9 && x <= 1 + 1e-9);
+  if (!inRange(l1, s) || !inRange(l2, t)) return null;
+  const p = l1.a.addScaled(l1.dir, s);
+  const q = l2.a.addScaled(l2.dir, t);
+  return p.distanceTo(q) <= TOL ? p.lerp(q, 0.5) : null;
 }
 
 function distanceToSegment2D(p: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }): number {

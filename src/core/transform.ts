@@ -33,6 +33,27 @@ export function mapCurveInfo(info: CurveInfo, map: PointMap): CurveInfo {
   return { kind: info.kind, center, normal: map(info.center.add(info.normal)).sub(center).normalize(), radius: info.radius };
 }
 
+/** Scaling by per-axis factors about `anchor`. */
+export function scaling(anchor: Vec3, factors: Vec3): PointMap {
+  return (p) => {
+    const d = p.sub(anchor);
+    return anchor.add(new Vec3(d.x * factors.x, d.y * factors.y, d.z * factors.z));
+  };
+}
+
+/** Keeps a curve's center/radius only if its vertices really are on a circle around it. */
+function refitCurve(mesh: Mesh, id: number): void {
+  const info = mesh.curves.get(id);
+  if (!info?.center) return;
+  const pts = new Set<Vertex>();
+  for (const e of mesh.curveEdges(id)) pts.add(e.v0).add(e.v1);
+  const radii = [...pts].map((v) => v.pos.distanceTo(info.center!));
+  const min = Math.min(...radii);
+  const max = Math.max(...radii);
+  if (radii.length > 0 && max - min <= 1e-6 * Math.max(1, max)) mesh.curves.set(id, { ...info, radius: (min + max) / 2 });
+  else mesh.curves.set(id, { kind: info.kind });
+}
+
 /** All vertices used by the given faces and edges. */
 export function verticesOf(faces: Iterable<Face>, edges: Iterable<Edge>): Set<Vertex> {
   const out = new Set<Vertex>();
@@ -60,11 +81,14 @@ export function transformVertices(mesh: Mesh, vertices: Iterable<Vertex>, map: P
       if (e.curve) curves.add(e.curve);
     }
   }
-  // A curve moved as a whole keeps its center; one that's partly moved is distorted.
+  // A curve moved as a whole keeps its center (checked again below, since e.g. a
+  // non-uniform scale turns a circle into an ellipse); one partly moved is distorted.
+  const wholeCurves: number[] = [];
   for (const id of curves) {
     const info = mesh.curves.get(id);
     if (!info) continue;
     const whole = mesh.curveEdges(id).every((e) => movedSet.has(e.v0) && movedSet.has(e.v1));
+    if (whole) wholeCurves.push(id);
     mesh.curves.set(id, whole ? mapCurveInfo(info, map) : { kind: info.kind });
   }
 
@@ -76,6 +100,8 @@ export function transformVertices(mesh: Mesh, vertices: Iterable<Vertex>, map: P
     const other = mesh.vertexAt(v.pos, v);
     if (other) mesh.weldVertex(v, other);
   }
+
+  for (const id of wholeCurves) refitCurve(mesh, id);
 
   for (const f of faces) {
     if (!mesh.faces.has(f.id)) continue;

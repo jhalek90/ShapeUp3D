@@ -113,6 +113,15 @@ export class Model {
     this.changed();
   }
 
+  /** Replaces the whole model (opening a file, New); clears undo history. */
+  replace(state: MeshJSON): void {
+    this.endPreview();
+    this.mesh.load(state);
+    this.undoStack = [];
+    this.redoStack = [];
+    this.changed();
+  }
+
   onChange(fn: () => void): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
@@ -126,7 +135,5 @@ export class Model {
 
 function sameContent(a: MeshJSON, b: MeshJSON): boolean {
   // nextId doesn't matter: a vertex created and removed again is no change.
-  return (
-    JSON.stringify([a.vertices, a.edges, a.faces]) === JSON.stringify([b.vertices, b.edges, b.faces])
-  );
+  return JSON.stringify([a.vertices, a.edges, a.faces, a.guides]) === JSON.stringify([b.vertices, b.edges, b.faces, b.guides]);
 }

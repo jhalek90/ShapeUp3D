@@ -14,7 +14,7 @@ const DRAG_PX = 6;
 const SIDES = /^\s*(\d+)\s*s\s*$/i;
 
 /** Snapped inference kinds whose position defines the radius (projected onto the circle's plane). */
-const SNAPS = new Set(['endpoint', 'midpoint', 'center', 'intersection', 'origin', 'on-edge', 'on-axis']);
+const SNAPS = new Set(['endpoint', 'midpoint', 'center', 'intersection', 'guide-point', 'on-guide', 'origin', 'on-edge', 'on-axis']);
 
 /**
  * Circle and Polygon: click the center, then click or type the radius. The shape

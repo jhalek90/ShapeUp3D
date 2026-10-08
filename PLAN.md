@@ -220,11 +220,27 @@ Measurements box wired to the parser. Deploy instructions.
   smooth edges so cylinders and round holes look round.
 - Not yet: 3-point arc, pie, tangent-arc inference, offset of selected edges (only faces).
 
-### M6 — Organization, measurement, files
-- **Groups** and **Components** (edit context, isolation of geometry).
-- **Tape Measure** + guide lines/points, **Protractor**.
-- **Scale** (with grips, uniform/non-uniform, numeric).
-- Native save/open, autosave, units settings dialog.
+### M6a — Files, measuring, scale ✅
+- **Files**: native `.su3d` (versioned JSON: geometry, guides, units, camera),
+  validated on open. File menu: New, Open (Ctrl+O), Save (Ctrl+S, writes back to the
+  same file where the browser allows), Save As (Ctrl+Shift+S). Title shows the file
+  name and • for unsaved changes.
+- **Autosave**: every change is kept in the browser (IndexedDB) and restored on
+  reload; nothing leaves the browser.
+- **Guides** (part of the model, undoable, saved): dashed infinite lines and points,
+  snappable ("On Guide", "Guide Point", intersections with edges/guides). Eraser
+  erases them; Edit → Delete Guides.
+- **Tape Measure** (T): measure; from an edge makes a parallel guide line, from a
+  point a guide point; typed distances; Ctrl = measure only.
+- **Protractor**: guide line at an angle (15° snapping, typed angle).
+- **Scale** (S): bounding-box grips (corner uniform, edge 2-axis, face 1-axis),
+  typed factor / per-axis factors / size ("50mm"), Ctrl = about center. Circles stay
+  circles under uniform scale.
+- Shortcut change: Select None is Ctrl+Shift+A (browsers reserve Ctrl+T / Ctrl+N).
+
+### M6b — Groups & components
+- **Groups** and **Components** (edit context, isolation of geometry, instances
+  sharing a definition), outliner basics.
 
 ### M7 — STL import/export
 - As described above, including the watertight check.

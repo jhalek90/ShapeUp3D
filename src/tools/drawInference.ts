@@ -7,6 +7,8 @@ const MARKERS: Partial<Record<InferenceKind, { shape: MarkerShape; color: string
   midpoint: { shape: 'circle', color: '#18b8d2' },
   center: { shape: 'circle', color: '#0b7a2a' },
   intersection: { shape: 'cross', color: '#111' },
+  'guide-point': { shape: 'circle', color: '#555' },
+  'on-guide': { shape: 'square', color: '#555' },
   origin: { shape: 'circle', color: '#f0b400' },
   'on-edge': { shape: 'square', color: '#e02424' },
   'on-face': { shape: 'diamond', color: '#2c5ce8' },

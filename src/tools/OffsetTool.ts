@@ -7,7 +7,7 @@ import type { Overlay } from '../viewport/Overlay';
 import { drawInference } from './drawInference';
 import type { Tool, ToolContext, ToolPointerEvent } from './Tool';
 
-const SNAPS = new Set(['endpoint', 'midpoint', 'center', 'intersection', 'origin', 'on-edge']);
+const SNAPS = new Set(['endpoint', 'midpoint', 'center', 'intersection', 'guide-point', 'on-guide', 'origin', 'on-edge']);
 
 /**
  * Offset: click a face, move the cursor in or out, click (or type a distance).

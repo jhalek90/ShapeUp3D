@@ -26,6 +26,12 @@ export interface CurveInfo {
   radius?: number;
 }
 
+/**
+ * Construction guides (from Tape Measure and Protractor): infinite dashed lines and
+ * points that snapping can use but that aren't geometry (never part of faces/STL).
+ */
+export type Guide = { id: number; kind: 'line'; point: Vec3; dir: Vec3 } | { id: number; kind: 'point'; point: Vec3 };
+
 /** Curves whose extrusions read as smooth surfaces (polygons stay faceted). */
 export function isSmoothCurve(kind: CurveKind | undefined): boolean {
   return kind === 'circle' || kind === 'arc';
@@ -116,6 +122,8 @@ export interface MeshJSON {
   faces: [number, number[], number[][], [number, number, number]][];
   /** [id, kind, center or null, normal or null, radius or null] */
   curves?: [number, CurveKind, number[] | null, number[] | null, number | null][];
+  /** [id, point, direction or null (a guide point)] */
+  guides?: [number, number[], number[] | null][];
 }
 
 /** Copies an edge's display flags and curve onto another edge. */
@@ -134,6 +142,7 @@ export class Mesh {
   readonly edges = new Map<number, Edge>();
   readonly faces = new Map<number, Face>();
   readonly curves = new Map<number, CurveInfo>();
+  readonly guides = new Map<number, Guide>();
 
   private nextId = 1;
   private readonly grid = new Map<string, Vertex[]>();
@@ -359,6 +368,20 @@ export class Mesh {
     this.removeVertex(v);
   }
 
+  // ---- Guides --------------------------------------------------------------
+
+  addGuideLine(point: Vec3, dir: Vec3): Guide {
+    const g: Guide = { id: this.nextId++, kind: 'line', point, dir: dir.normalize() };
+    this.guides.set(g.id, g);
+    return g;
+  }
+
+  addGuidePoint(point: Vec3): Guide {
+    const g: Guide = { id: this.nextId++, kind: 'point', point };
+    this.guides.set(g.id, g);
+    return g;
+  }
+
   // ---- Curves --------------------------------------------------------------
 
   addCurve(info: CurveInfo): number {
@@ -476,6 +499,7 @@ export class Mesh {
         e.curve,
       ]),
       // Only curves still in use; curves are dropped once their last edge goes.
+      guides: [...this.guides.values()].map((g) => [g.id, g.point.toArray(), g.kind === 'line' ? g.dir.toArray() : null]),
       curves: [...this.curves]
         .filter(([id]) => usedCurves.has(id))
         .map(([id, c]) => [id, c.kind, c.center?.toArray() ?? null, c.normal?.toArray() ?? null, c.radius ?? null]),
@@ -494,6 +518,11 @@ export class Mesh {
     this.edges.clear();
     this.faces.clear();
     this.curves.clear();
+    this.guides.clear();
+    for (const [id, p, d] of json.guides ?? []) {
+      const point = new Vec3(p[0], p[1], p[2]);
+      this.guides.set(id, d ? { id, kind: 'line', point, dir: new Vec3(d[0], d[1], d[2]) } : { id, kind: 'point', point });
+    }
     this.grid.clear();
     for (const [id, x, y, z] of json.vertices) {
       const v = new Vertex(id, new Vec3(x, y, z));

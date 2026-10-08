@@ -12,7 +12,11 @@ import { OrbitTool, PanTool, ZoomTool } from '../tools/navigationTools';
 import { OffsetTool } from '../tools/OffsetTool';
 import { PushPullTool } from '../tools/PushPullTool';
 import { RectangleTool } from '../tools/RectangleTool';
+import { ProtractorTool } from '../tools/ProtractorTool';
 import { RotateTool } from '../tools/RotateTool';
+import { ScaleTool } from '../tools/ScaleTool';
+import { TapeMeasureTool } from '../tools/TapeMeasureTool';
+import { GuideRenderer } from '../viewport/GuideRenderer';
 import { SelectTool } from '../tools/SelectTool';
 import type { ToolContext } from '../tools/Tool';
 import { ToolManager } from '../tools/ToolManager';
@@ -25,6 +29,7 @@ import { InputRouter } from '../viewport/InputRouter';
 import { ModelRenderer } from '../viewport/ModelRenderer';
 import { Overlay } from '../viewport/Overlay';
 import { Viewport } from '../viewport/Viewport';
+import { DocumentController } from './DocumentController';
 import { Selection } from './Selection';
 
 /** Characters that start typing into the Measurements box. */
@@ -39,17 +44,23 @@ export class App {
   readonly tools: ToolManager;
   private readonly statusBar: StatusBar;
   private readonly shortcuts: Record<string, () => void>;
+  readonly document: DocumentController;
 
   constructor() {
     this.viewport = new Viewport(byId('viewport'), this.camera);
     this.statusBar = new StatusBar(this.format.unit);
 
     const renderer = new ModelRenderer(this.model, this.viewport.modelRoot);
-    this.viewport.beforeRender.push(() => renderer.update());
+    const guides = new GuideRenderer(this.model, this.viewport.scene, this.camera);
+    this.viewport.beforeRender.push(() => {
+      renderer.update();
+      guides.update();
+    });
     this.selection.onChange(() => renderer.setHighlight('selection', this.selection.faces, this.selection.edges));
     const overlay = new Overlay(byId('viewport'), this.camera);
     this.viewport.afterRender.push(() => {
       overlay.begin();
+      guides.drawPoints(overlay);
       this.tools.draw(overlay);
     });
 
@@ -79,6 +90,9 @@ export class App {
       new PushPullTool(),
       new MoveTool(),
       new RotateTool(),
+      new ScaleTool(),
+      new TapeMeasureTool(),
+      new ProtractorTool(),
       new OrbitTool(),
       new PanTool(),
       new ZoomTool(),
@@ -98,9 +112,15 @@ export class App {
       P: () => this.tools.activate('pushpull'),
       M: () => this.tools.activate('move'),
       Q: () => this.tools.activate('rotate'),
+      S: () => this.tools.activate('scale'),
+      T: () => this.tools.activate('tape'),
       Delete: () => this.eraseSelection(),
       'Ctrl+A': () => this.selectAll(),
-      'Ctrl+T': () => this.selection.clear(),
+      // (Browsers reserve Ctrl+T / Ctrl+N, so these differ from SketchUp.)
+      'Ctrl+Shift+A': () => this.selection.clear(),
+      'Ctrl+O': () => void this.document.open(),
+      'Ctrl+S': () => void this.document.save(),
+      'Ctrl+Shift+S': () => void this.document.saveAs(),
       O: () => this.tools.activate('orbit'),
       H: () => this.tools.activate('pan'),
       Z: () => this.tools.activate('zoom'),
@@ -112,7 +132,17 @@ export class App {
 
     this.statusBar.onSubmit = (text) => this.enterMeasurement(text);
     this.statusBar.onEscape = () => this.tools.cancel();
-    this.statusBar.onUnitsChange = (unit) => (this.format.unit = unit);
+    this.document = new DocumentController(
+      this.model,
+      this.format,
+      this.camera,
+      () => this.statusBar.setUnit(this.format.unit),
+      (text) => this.statusBar.setHint(text),
+    );
+    this.statusBar.onUnitsChange = (unit) => {
+      this.format.unit = unit;
+      this.document.markDirty();
+    };
 
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', (e) => {
@@ -120,6 +150,7 @@ export class App {
     });
 
     this.tools.activate('select');
+    void this.document.restore();
   }
 
   zoomExtents(): void {
@@ -146,6 +177,11 @@ export class App {
       eraseEdges(m, edges);
     });
     this.selection.clear();
+  }
+
+  deleteGuides(): void {
+    if (this.model.mesh.guides.size === 0) return;
+    this.model.transact('Delete Guides', (m) => m.guides.clear());
   }
 
   selectAll(): void {
@@ -198,11 +234,25 @@ export class App {
         { label: 'Delete', shortcut: 'Delete', run: () => this.eraseSelection() },
         { separator: true },
         { label: 'Select All', shortcut: 'Ctrl+A', run: () => this.selectAll() },
-        { label: 'Select None', shortcut: 'Ctrl+T', run: () => this.selection.clear() },
+        { label: 'Select None', shortcut: 'Ctrl+Shift+A', run: () => this.selection.clear() },
+        { separator: true },
+        { label: 'Delete Guides', run: () => this.deleteGuides() },
+      ],
+      'left',
+    );
+    const fileMenu = new Menu(
+      'File',
+      [
+        { label: 'New', run: () => this.document.newDocument() },
+        { label: 'Open…', shortcut: 'Ctrl+O', run: () => void this.document.open() },
+        { separator: true },
+        { label: 'Save', shortcut: 'Ctrl+S', run: () => void this.document.save() },
+        { label: 'Save As…', shortcut: 'Ctrl+Shift+S', run: () => void this.document.saveAs() },
       ],
       'left',
     );
     return [
+      { type: 'menu', menu: fileMenu },
       { type: 'menu', menu: editMenu },
       { type: 'separator' },
       { type: 'tool', id: 'select' },
@@ -220,10 +270,10 @@ export class App {
       { type: 'separator' },
       { type: 'tool', id: 'move' },
       { type: 'tool', id: 'rotate' },
-      { type: 'soon', label: 'Scale', shortcut: 'S' },
+      { type: 'tool', id: 'scale' },
       { type: 'separator' },
-      { type: 'soon', label: 'Tape Measure', shortcut: 'T' },
-      { type: 'soon', label: 'Protractor' },
+      { type: 'tool', id: 'tape' },
+      { type: 'tool', id: 'protractor' },
       { type: 'spacer' },
       { type: 'tool', id: 'orbit' },
       { type: 'tool', id: 'pan' },

@@ -174,3 +174,36 @@ describe('InferenceEngine intersections and locked lines', () => {
     expect(r.refTooltip).toBe('On Face');
   });
 });
+
+describe('InferenceEngine guides', () => {
+  it('snaps to guide points and guide lines', () => {
+    const { at } = setup((m) => {
+      m.addGuidePoint(new Vec3(30, 30, 0));
+      m.addGuideLine(new Vec3(0, 60, 0), Vec3.X);
+    });
+    expect(at(new Vec3(30, 30, 0), 3, 2).kind).toBe('guide-point');
+    const onLine = at(new Vec3(-40, 60, 0), 0, 3);
+    expect(onLine.kind).toBe('on-guide');
+    expect(onLine.point.y).toBeCloseTo(60, 6);
+  });
+
+  it('snaps to where a guide crosses an edge', () => {
+    const { at } = setup((m) => {
+      m.addGuideLine(new Vec3(0, 25, 0), Vec3.X);
+      drawSegments(m, [[new Vec3(40, 0, 0), new Vec3(40, 80, 0)]]);
+    });
+    const r = at(new Vec3(40, 25, 0), 2, -2);
+    expect(r.kind).toBe('intersection');
+    expect(r.point.distanceTo(new Vec3(40, 25, 0))).toBeLessThan(1e-9);
+  });
+
+  it('snaps to where two guides cross', () => {
+    const { at } = setup((m) => {
+      m.addGuideLine(new Vec3(0, 25, 0), Vec3.X);
+      m.addGuideLine(new Vec3(15, 0, 0), Vec3.Y);
+    });
+    const r = at(new Vec3(15, 25, 0), -2, 2);
+    expect(r.kind).toBe('intersection');
+    expect(r.point.distanceTo(new Vec3(15, 25, 0))).toBeLessThan(1e-9);
+  });
+});
