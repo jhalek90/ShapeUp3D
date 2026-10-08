@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import { closestLineParam, closestPointOnSegment, closestSegmentSegment, Plane, TOL, Vec3, type XYZ } from '../core/math';
+import { closestLineParam, closestPointOnSegment, closestSegmentSegment, Plane, PlaneProjector, pointInPolygon2D, TOL, type Vec2, Vec3, type XYZ } from '../core/math';
 import { faceContainsPoint, type Edge, type Face, type Guide, type Mesh, type Vertex } from '../core/Mesh';
-import type { ForeignGeometry } from '../core/scene';
+import type { ForeignGeometry, ForeignPart } from '../core/scene';
 import type { CameraController } from '../viewport/CameraController';
 
 // Inference ("snapping"): turns a cursor position into a meaningful 3D point.
@@ -127,7 +127,42 @@ export class InferenceEngine {
   /** Meshes to snap to: the active one first. */
   private meshes(): Mesh[] {
     const { active, foreign } = this.sources();
-    return foreign ? [active, foreign.mesh] : [active];
+    return foreign ? [active, ...foreign.parts.map((p) => p.mesh)] : [active];
+  }
+
+  /**
+   * Meshes worth checking for point/edge snaps near the cursor: the active mesh,
+   * and parts whose on-screen bounds come within snapping range.
+   */
+  private nearMeshes(cursor: { x: number; y: number }): Mesh[] {
+    const { active, foreign } = this.sources();
+    const out = [active];
+    for (const part of foreign?.parts ?? []) if (this.partNearCursor(part, cursor)) out.push(part.mesh);
+    return out;
+  }
+
+  private partNearCursor(part: ForeignPart, cursor: { x: number; y: number }): boolean {
+    if (!Number.isFinite(part.min.x)) return false; // empty
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (let i = 0; i < 8; i++) {
+      const s = this.view.project(new Vec3(i & 1 ? part.max.x : part.min.x, i & 2 ? part.max.y : part.min.y, i & 4 ? part.max.z : part.min.z));
+      if (!s) return true; // partly behind the camera: can't rule it out
+      x0 = Math.min(x0, s.x);
+      y0 = Math.min(y0, s.y);
+      x1 = Math.max(x1, s.x);
+      y1 = Math.max(y1, s.y);
+    }
+    const m = Math.max(POINT_PX, EDGE_PX);
+    return cursor.x >= x0 - m && cursor.x <= x1 + m && cursor.y >= y0 - m && cursor.y <= y1 + m;
+  }
+
+  /** The foreign part an entity belongs to, if any. */
+  private partOf(entity: Face | Edge): ForeignPart | undefined {
+    const parts = this.sources().foreign?.parts ?? [];
+    return parts.find((p) => ('outer' in entity ? p.mesh.faces.get(entity.id) === entity : p.mesh.edges.get(entity.id) === entity));
   }
 
   /** True if a face/edge belongs to the mesh being edited (so tools may change it). */
@@ -182,7 +217,7 @@ export class InferenceEngine {
     const entity = (hit.edge ?? hit.face)!;
     if (this.isActive(entity)) return hit;
     // Foreign geometry: a group/component in the active mesh, or something outside the open group.
-    const instance = this.sources().foreign?.owner.get(entity);
+    const instance = this.partOf(entity)?.owner;
     return instance !== undefined ? { instance, point: hit.point } : { outside: true, point: hit.point };
   }
 
@@ -213,9 +248,11 @@ export class InferenceEngine {
         best = make();
       }
     };
-    for (const mesh of this.meshes()) {
+    for (const mesh of this.nearMeshes(cursor)) {
       for (const v of mesh.vertices.values()) {
-        if (![...v.edges].some(isVisibleEdge)) continue;
+        let shown = false;
+        for (const e of v.edges) if (isVisibleEdge(e)) shown = true;
+        if (!shown) continue;
         consider(v.pos, () => ({ point: v.pos, kind: 'endpoint', tooltip: 'Endpoint', vertex: v }));
       }
       for (const e of mesh.edges.values()) {
@@ -242,7 +279,7 @@ export class InferenceEngine {
    * crossing edges), and edges or guides passing through faces.
    */
   private intersections(cursor: { x: number; y: number }, consider: (p: Vec3, make: () => Inference) => void): void {
-    const near = this.linears().filter((l) => {
+    const near = this.linears(cursor).filter((l) => {
       const d = this.screenDistance(cursor, l);
       return d !== null && d < POINT_PX;
     });
@@ -259,7 +296,7 @@ export class InferenceEngine {
       }
     }
     // Edges and guides passing through faces.
-    const faces = this.meshes().flatMap((m) => [...m.faces.values()]);
+    const faces = this.nearMeshes(cursor).flatMap((m) => [...m.faces.values()]);
     for (const l of near) {
       for (const f of faces) {
         const plane = f.plane;
@@ -273,10 +310,16 @@ export class InferenceEngine {
     }
   }
 
-  /** Visible edges (segments) and guide lines (infinite), for line snapping. */
-  private linears(): Linear[] {
+  /** Visible edges (segments) and guide lines (infinite) near the cursor, for line snapping. */
+  private linears(cursor: { x: number; y: number }): Linear[] {
     const out: Linear[] = [];
+    // Guide lines are infinite, so they're taken from every mesh; edges only from nearby ones.
+    const near = new Set(this.nearMeshes(cursor));
     for (const mesh of this.meshes()) {
+      if (!near.has(mesh)) {
+        for (const g of mesh.guides.values()) if (g.kind === 'line') out.push({ a: g.point, dir: g.dir, segment: false, guide: g });
+        continue;
+      }
       for (const e of mesh.edges.values()) {
         if (isVisibleEdge(e)) out.push({ a: e.v0.pos, dir: e.v1.pos.sub(e.v0.pos), segment: true, edge: e });
       }
@@ -317,7 +360,7 @@ export class InferenceEngine {
   private nearestEdge(cursor: { x: number; y: number }, origin: Vec3, dir: Vec3, visible: (p: Vec3) => boolean): Inference | null {
     let best: Inference | null = null;
     let bestDist = EDGE_PX;
-    for (const l of this.linears()) {
+    for (const l of this.linears(cursor)) {
       const d = this.screenDistance(cursor, l);
       if (d === null || d >= bestDist) continue;
       // The 3D point on the edge / guide nearest the cursor ray.
@@ -466,14 +509,82 @@ export class InferenceEngine {
   /** Nearest face hit by the ray. */
   private raycastFaces(origin: Vec3, dir: Vec3): { face: Face; point: Vec3; t: number } | null {
     let best: { face: Face; point: Vec3; t: number } | null = null;
-    for (const face of this.meshes().flatMap((m) => [...m.faces.values()])) {
-      const t = face.plane.intersectRay(origin, dir);
-      if (t === null || (this.view.perspective && t <= 0) || (best && t >= best.t)) continue;
+    const consider = (face: Face, inside: (p: Vec3) => boolean, plane: Plane) => {
+      const t = plane.intersectRay(origin, dir);
+      if (t === null || (this.view.perspective && t <= 0) || (best && t >= best.t)) return;
       const p = origin.addScaled(dir, t);
-      if (faceContainsPoint(face, p)) best = { face, point: p, t };
+      if (inside(p)) best = { face, point: p, t };
+    };
+    const { active, foreign } = this.sources();
+    for (const face of active.faces.values()) consider(face, (p) => faceContainsPoint(face, p), face.plane);
+    for (const part of foreign?.parts ?? []) {
+      if (!rayHitsBox(origin, dir, part.min, part.max)) continue;
+      for (const fd of faceData(part)) consider(fd.face, (p) => fd.contains(p), fd.plane);
     }
     return best;
   }
+}
+
+interface FaceData {
+  face: Face;
+  plane: Plane;
+  contains(p: Vec3): boolean;
+}
+
+/** Face outlines of a foreign part, precomputed once (parts don't change while cached). */
+const faceDataCache = new WeakMap<ForeignPart, FaceData[]>();
+
+function faceData(part: ForeignPart): FaceData[] {
+  let data = faceDataCache.get(part);
+  if (data) return data;
+  data = [...part.mesh.faces.values()].map((face) => {
+    const plane = face.plane;
+    const proj = new PlaneProjector(plane);
+    const outer: Vec2[] = face.outer.map((v) => proj.to2D(v.pos));
+    const holes: Vec2[][] = face.holes.map((h) => h.map((v) => proj.to2D(v.pos)));
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (const q of outer) {
+      x0 = Math.min(x0, q.x);
+      y0 = Math.min(y0, q.y);
+      x1 = Math.max(x1, q.x);
+      y1 = Math.max(y1, q.y);
+    }
+    return {
+      face,
+      plane,
+      contains(p: Vec3) {
+        const q = proj.to2D(p);
+        if (q.x < x0 || q.x > x1 || q.y < y0 || q.y > y1) return false;
+        return pointInPolygon2D(q, outer) && !holes.some((h) => pointInPolygon2D(q, h));
+      },
+    };
+  });
+  faceDataCache.set(part, data);
+  return data;
+}
+
+/** Slab test: does the ray (forwards or backwards for parallel views) pass through the box? */
+function rayHitsBox(origin: Vec3, dir: Vec3, min: Vec3, max: Vec3): boolean {
+  let t0 = -Infinity;
+  let t1 = Infinity;
+  for (const k of ['x', 'y', 'z'] as const) {
+    const o = origin[k];
+    const d = dir[k];
+    if (Math.abs(d) < 1e-15) {
+      if (o < min[k] - TOL || o > max[k] + TOL) return false;
+      continue;
+    }
+    let a = (min[k] - TOL - o) / d;
+    let b = (max[k] + TOL - o) / d;
+    if (a > b) [a, b] = [b, a];
+    t0 = Math.max(t0, a);
+    t1 = Math.min(t1, b);
+    if (t0 > t1) return false;
+  }
+  return true;
 }
 
 /** Soft and hidden edges aren't drawn, so they aren't snapped to either. */

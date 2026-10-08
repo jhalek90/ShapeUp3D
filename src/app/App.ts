@@ -3,7 +3,7 @@ import { Vec3 } from '../core/math';
 import { Model } from '../core/Model';
 import { explode, makeGroup } from '../core/groups';
 import { eraseEdges, eraseFaces } from '../core/ops';
-import { buildForeignGeometry, type ForeignGeometry } from '../core/scene';
+import { ForeignCache, type ForeignGeometry } from '../core/scene';
 import { InferenceEngine, viewFromCamera } from '../inference/InferenceEngine';
 import { ArcTool } from '../tools/ArcTool';
 import { CircleTool } from '../tools/CircleTool';
@@ -32,6 +32,7 @@ import { ModelRenderer } from '../viewport/ModelRenderer';
 import { Overlay } from '../viewport/Overlay';
 import { Viewport } from '../viewport/Viewport';
 import { DocumentController } from './DocumentController';
+import { StlController } from './StlController';
 import { Selection } from './Selection';
 
 /** Characters that start typing into the Measurements box. */
@@ -47,6 +48,7 @@ export class App {
   private readonly statusBar: StatusBar;
   private readonly shortcuts: Record<string, () => void>;
   readonly document: DocumentController;
+  readonly stl: StlController;
 
   constructor() {
     this.viewport = new Viewport(byId('viewport'), this.camera);
@@ -63,6 +65,7 @@ export class App {
     this.viewport.afterRender.push(() => {
       overlay.begin();
       guides.drawPoints(overlay);
+      for (const [a, b] of this.stl.problems) overlay.line(a, b, { color: '#e02424', width: 3 });
       this.tools.draw(overlay);
     });
 
@@ -125,6 +128,7 @@ export class App {
       'Ctrl+O': () => void this.document.open(),
       'Ctrl+S': () => void this.document.save(),
       'Ctrl+Shift+S': () => void this.document.saveAs(),
+      'Ctrl+E': () => void this.stl.exportStl(),
       O: () => this.tools.activate('orbit'),
       H: () => this.tools.activate('pan'),
       Z: () => this.tools.activate('zoom'),
@@ -142,6 +146,13 @@ export class App {
       this.camera,
       () => this.statusBar.setUnit(this.format.unit),
       (text) => this.statusBar.setHint(text),
+    );
+    this.stl = new StlController(
+      this.model,
+      this.selection,
+      () => this.document.fileName,
+      (text) => this.statusBar.setHint(text),
+      () => this.zoomExtents(),
     );
     this.statusBar.onUnitsChange = (unit) => {
       this.format.unit = unit;
@@ -167,14 +178,15 @@ export class App {
     void this.document.restore();
   }
 
+  private readonly foreignCache = new ForeignCache();
   private foreign: ForeignGeometry | undefined;
   private foreignVersion = -1;
 
   /** What snapping sees: the mesh being edited, and everything else in world coordinates. */
   private snapSources(): { active: import('../core/Mesh').Mesh; foreign?: ForeignGeometry } {
-    // Rebuilt when the model changes; live previews only change the active mesh, so keep it then.
+    // Live previews only change the active mesh, so the outside stays valid while they run.
     if (!this.model.previewing && this.foreignVersion !== this.model.version) {
-      this.foreign = buildForeignGeometry(this.model);
+      this.foreign = this.foreignCache.build(this.model);
       this.foreignVersion = this.model.version;
     }
     return { active: this.model.active, foreign: this.foreign };
@@ -238,10 +250,14 @@ export class App {
   }
 
   deleteGuides(): void {
-    this.model.transact('Delete Guides', (_m, model) => {
-      model.mesh.guides.clear();
-      for (const d of model.definitions.values()) d.mesh.guides.clear();
-    });
+    this.model.transact(
+      'Delete Guides',
+      (_m, model) => {
+        model.mesh.guides.clear();
+        for (const d of model.definitions.values()) d.mesh.guides.clear();
+      },
+      { scope: 'all' },
+    );
   }
 
   selectAll(): void {
@@ -313,6 +329,9 @@ export class App {
         { separator: true },
         { label: 'Save', shortcut: 'Ctrl+S', run: () => void this.document.save() },
         { label: 'Save As…', shortcut: 'Ctrl+Shift+S', run: () => void this.document.saveAs() },
+        { separator: true },
+        { label: 'Import STL…', run: () => void this.stl.importStl() },
+        { label: 'Export STL…', shortcut: 'Ctrl+E', run: () => void this.stl.exportStl() },
       ],
       'left',
     );

@@ -43,6 +43,11 @@ export class DocumentController {
     this.scheduleAutosave();
   }
 
+  /** File name of the open document, if it has one. */
+  get fileName(): string | null {
+    return this.name;
+  }
+
   get isDirty(): boolean {
     return this.dirty;
   }
@@ -87,7 +92,7 @@ export class DocumentController {
     const file = await pickFile();
     if (!file) return;
     try {
-      this.load(file.text);
+      this.load(await file.file.text());
     } catch (err) {
       this.status((err as Error).message);
       window.alert((err as Error).message);

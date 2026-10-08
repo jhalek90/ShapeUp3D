@@ -25,7 +25,7 @@ export type { FileHandle };
 
 export interface PickedFile {
   name: string;
-  text: string;
+  file: File;
   handle?: FileHandle;
 }
 
@@ -36,6 +36,7 @@ export interface FileTypeInfo {
 }
 
 export const MODEL_FILE: FileTypeInfo = { description: 'ShapeUp3d model', mime: 'application/json', extensions: [FILE_EXTENSION] };
+export const STL_FILE: FileTypeInfo = { description: 'STL file', mime: 'model/stl', extensions: ['.stl'] };
 
 /** Lets the user pick a file to open. Resolves to null if they cancel. */
 export async function pickFile(type: FileTypeInfo = MODEL_FILE): Promise<PickedFile | null> {
@@ -44,21 +45,21 @@ export async function pickFile(type: FileTypeInfo = MODEL_FILE): Promise<PickedF
       const [handle] = await window.showOpenFilePicker({ types: [{ description: type.description, accept: { [type.mime]: type.extensions } }] });
       if (!handle) return null;
       const file = await handle.getFile();
-      return { name: file.name, text: await file.text(), handle };
+      return { name: file.name, file, handle };
     } catch (err) {
       if ((err as DOMException).name === 'AbortError') return null;
       throw err;
     }
   }
   // Fallback: a hidden <input type="file">.
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = type.extensions.join(',');
     input.addEventListener('change', () => {
       const file = input.files?.[0];
       if (!file) return resolve(null);
-      file.text().then((text) => resolve({ name: file.name, text }), reject);
+      resolve({ name: file.name, file });
     });
     input.addEventListener('cancel', () => resolve(null));
     input.click();

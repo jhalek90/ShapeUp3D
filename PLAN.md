@@ -255,9 +255,21 @@ Measurements box wired to the parser. Deploy instructions.
 - Fix: axes pointing at the viewer (blue in Top view) no longer capture the cursor.
 - Not yet: outliner panel, component naming/browser, Make Unique, mirrored scales.
 
-### M7 — STL import/export
-- As described above, including the watertight check.
-- *This is the milestone where it becomes usable for real print work.*
+### M7 — STL import/export ✅
+- **Export** (File → Export STL…, Ctrl+E): binary or ASCII, mm or inches, whole
+  model or selection; groups/components placed correctly. A printability report per
+  part (watertight ✓ with volume, or open edges / tangled edges / reversed faces),
+  "Fix reversed faces" (makes each shell consistent and outward), and "Show
+  problems" (open edges outlined in red).
+- **Import** (File → Import STL…): binary/ASCII, asks the file's units, imports into
+  a group. Welds points, merges coplanar triangles into real faces (a cube is 6
+  faces; holes stay holes), softens edges between facets under 20°. A 40k-triangle
+  STL imports in ~1 s.
+- **Performance** for big parts: the model caches each mesh's serialized form so
+  undo/previews only reload what changed; snapping caches world copies of
+  everything outside the edited group per epoch (5 ms instead of 230 ms after an
+  edit) and skips parts far from the cursor; ~10 ms per hover over a 20k-face part.
+- Not yet: 3MF export (M10), repairing open edges automatically.
 
 ### M8 — Follow Me
 - Extrude a face along a path (edges or a face's perimeter), incl. lathe-style

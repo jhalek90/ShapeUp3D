@@ -186,13 +186,14 @@ describe('foreign geometry (for snapping)', () => {
     model.transact('Copy', (m, mdl) => copyInstance(mdl, m, a, Transform.translation(v(50, 0, 0))));
     // At the top level: both groups are foreign, each owned by its instance.
     let foreign = buildForeignGeometry(model);
-    expect(foreign.mesh.faces.size).toBe(12);
-    expect(new Set(foreign.owner.values()).size).toBe(2);
+    expect(foreign.parts.reduce((n, p) => n + p.mesh.faces.size, 0)).toBe(12);
+    expect(new Set(foreign.parts.map((p) => p.owner)).size).toBe(2);
     // Inside one group: only the other one is foreign, and it isn't selectable from in here.
     model.enter(a.id);
     foreign = buildForeignGeometry(model);
-    expect(foreign.mesh.faces.size).toBe(6);
-    expect(foreign.owner.size).toBe(0);
-    expect(Math.min(...[...foreign.mesh.vertices.values()].map((p) => p.pos.x))).toBeCloseTo(50);
+    const faces = foreign.parts.flatMap((p) => [...p.mesh.faces.values()]);
+    expect(faces).toHaveLength(6);
+    expect(foreign.parts.every((p) => p.owner === undefined)).toBe(true);
+    expect(Math.min(...foreign.parts.flatMap((p) => [...p.mesh.vertices.values()].map((v) => v.pos.x)))).toBeCloseTo(50);
   });
 });

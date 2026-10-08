@@ -41,6 +41,7 @@ npm run build      # typecheck + production build into dist/
 - `S` Scale: drag a grip on the selection's box (corners uniform), or type a factor / size like `50mm`.
 - `T` Tape Measure: measure; from an edge leaves a parallel guide, from a point a guide point. Protractor makes angled guides.
 - Groups: select, `Ctrl+G` (group) or `G` (component). Double-click to edit inside, `Esc` or click outside to close. Edit → Explode.
+- File → Export STL… (`Ctrl+E`): checks the model is watertight first (and can fix reversed faces). File → Import STL…: brings an STL in as editable faces in a group.
 - File menu: New, Open (`Ctrl+O`), Save (`Ctrl+S`), Save As (`Ctrl+Shift+S`). Work is autosaved in the browser and restored on reload.
 - `Ctrl+Z` / `Ctrl+Y` undo / redo, `Ctrl+A` select all, `Ctrl+Shift+A` select none
 

@@ -42,6 +42,14 @@ interface Snapshot {
   state: ModelJSON;
 }
 
+export interface TransactOptions {
+  /**
+   * 'active' (default): the operation only changes the mesh being edited (and
+   * definitions it creates). 'all': it may change any mesh (e.g. Delete Guides).
+   */
+  scope?: 'active' | 'all';
+}
+
 /**
  * The document: geometry (the root mesh plus group/component definitions), the
  * group being edited, and undo history. Every change goes through `transact`.
@@ -49,6 +57,12 @@ interface Snapshot {
  * Editing inside a group: `enter` moves the group's geometry into world
  * coordinates (recording `frame`), so tools work on `active` without knowing about
  * transforms; `exit` moves it back. History stores whole-model snapshots.
+ *
+ * Performance: each mesh's serialized form is cached until that mesh may have
+ * changed, so snapshots share the JSON of untouched meshes by reference, and
+ * restoring a snapshot (undo, live previews) skips reloading meshes whose JSON is
+ * the very object they were last loaded from. A big imported part you aren't
+ * editing then costs nothing per operation.
  */
 export class Model {
   /** The top level of the model. */
@@ -62,6 +76,19 @@ export class Model {
   private readonly listeners = new Set<() => void>();
   private _version = 0;
   private previewBase: ModelJSON | null = null;
+  /** Serialized form of each mesh while it's known to be unchanged. */
+  private jsonCache = new WeakMap<Mesh, MeshJSON>();
+  private _epoch = 0;
+
+  /**
+   * Changes whenever a mesh other than the active one may have changed (entering
+   * or leaving a group, an operation with scope 'all', replacing the model). Caches
+   * of "everything but the active mesh" are valid while it stays the same, together
+   * with mesh identity (meshes reloaded from a snapshot are new objects).
+   */
+  get epoch(): number {
+    return this._epoch;
+  }
 
   /** Increments on every change; renderers compare it to know when to rebuild. */
   get version(): number {
@@ -99,6 +126,8 @@ export class Model {
     const def = inst && this.definitions.get(inst.definition);
     if (!inst || !def || def.frame) return;
     this.endPreview();
+    this.touch(def.mesh);
+    this._epoch++;
     def.mesh.applyTransform(inst.transform);
     def.frame = inst.transform;
     this.path.push(instanceId);
@@ -110,6 +139,8 @@ export class Model {
     const def = this.activeDefinition;
     if (!def) return false;
     this.endPreview();
+    this.touch(def.mesh);
+    this._epoch++;
     if (def.frame) def.mesh.applyTransform(def.frame.inverse());
     def.frame = undefined;
     this.path.pop();
@@ -164,9 +195,12 @@ export class Model {
    * Runs `fn` on the active mesh as one undoable operation. If it throws, the
    * model is restored.
    */
-  transact<T>(name: string, fn: (mesh: Mesh, model: Model) => T): T {
+  transact<T>(name: string, fn: (mesh: Mesh, model: Model) => T, options: TransactOptions = {}): T {
     this.endPreview();
     const before = this.toJSON();
+    // Whatever fn may change no longer matches its cached JSON.
+    this.touch(this.active);
+    if (options.scope === 'all') this.touchAll();
     let result: T;
     try {
       result = fn(this.active, this);
@@ -232,6 +266,7 @@ export class Model {
     if (!this.previewBase) return;
     this.load(this.previewBase);
     if (fn) {
+      this.touch(this.active);
       try {
         fn(this.active, this);
       } catch (err) {
@@ -254,12 +289,12 @@ export class Model {
   /** Exact current state, including any open group (used for undo and previews). */
   toJSON(): ModelJSON {
     return {
-      root: this.mesh.toJSON(),
+      root: this.cachedJSON(this.mesh),
       definitions: [...this.definitions.values()].map((d) => ({
         id: d.id,
         name: d.name,
         kind: d.kind,
-        mesh: d.mesh.toJSON(),
+        mesh: this.cachedJSON(d.mesh),
         frame: d.frame?.toArray(),
       })),
       nextDefinitionId: this.nextDefinitionId,
@@ -297,14 +332,49 @@ export class Model {
     return { root: this.mesh.toJSON(), definitions, nextDefinitionId: this.nextDefinitionId, editPath: [] };
   }
 
+  private cachedJSON(mesh: Mesh): MeshJSON {
+    let json = this.jsonCache.get(mesh);
+    if (!json) {
+      json = mesh.toJSON();
+      this.jsonCache.set(mesh, json);
+    }
+    return json;
+  }
+
+  /** Marks a mesh as (possibly) changed. */
+  private touch(mesh: Mesh): void {
+    this.jsonCache.delete(mesh);
+  }
+
+  private touchAll(): void {
+    this.touch(this.mesh);
+    for (const d of this.definitions.values()) this.touch(d.mesh);
+    this._epoch++;
+  }
+
   private load(json: ModelJSON): void {
-    this.mesh.load(json.root);
-    this.definitions.clear();
+    // A mesh whose JSON is exactly the object it was last loaded from / saved as is unchanged: keep it.
+    if (this.jsonCache.get(this.mesh) !== json.root) {
+      this.mesh.load(json.root);
+      this.jsonCache.set(this.mesh, json.root);
+    }
+    const old = this.definitions;
+    const next = new Map<number, Definition>();
     for (const d of json.definitions) {
+      const frame = d.frame ? new Transform(d.frame) : undefined;
+      const prev = old.get(d.id);
+      const sameFrame = (prev?.frame?.toArray().join() ?? '') === (d.frame?.join() ?? '');
+      if (prev && sameFrame && this.jsonCache.get(prev.mesh) === d.mesh) {
+        next.set(d.id, { ...prev, name: d.name, kind: d.kind, frame });
+        continue;
+      }
       const mesh = new Mesh();
       mesh.load(d.mesh);
-      this.definitions.set(d.id, { id: d.id, name: d.name, kind: d.kind, mesh, frame: d.frame ? new Transform(d.frame) : undefined });
+      this.jsonCache.set(mesh, d.mesh);
+      next.set(d.id, { id: d.id, name: d.name, kind: d.kind, mesh, frame });
     }
+    this.definitions.clear();
+    for (const [id, d] of next) this.definitions.set(id, d);
     this.nextDefinitionId = json.nextDefinitionId;
     this.path = [...json.editPath];
   }
@@ -312,6 +382,8 @@ export class Model {
   /** Replaces the whole model (opening a file, New); clears undo history. */
   replace(state: ModelJSON | MeshJSON): void {
     this.previewBase = null;
+    this.jsonCache = new WeakMap();
+    this._epoch++;
     this.load(isModelJSON(state) ? state : { root: state, definitions: [], nextDefinitionId: 1, editPath: [] });
     this.undoStack = [];
     this.redoStack = [];
