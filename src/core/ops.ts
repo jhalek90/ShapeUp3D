@@ -144,7 +144,7 @@ function splitEdgeAt(mesh: Mesh, e: Edge, verts: Vertex[]): void {
 }
 
 /** All edges lying along any of the given segments. */
-function edgesOnSegments(mesh: Mesh, segments: [Vec3, Vec3][]): Edge[] {
+export function edgesOnSegments(mesh: Mesh, segments: readonly (readonly [Vec3, Vec3])[]): Edge[] {
   const out: Edge[] = [];
   for (const e of mesh.edges.values()) {
     for (const [a, b] of segments) {
@@ -213,13 +213,19 @@ export interface RebuildOptions {
   opts?: DrawOptions;
   /** Extra shapes that make regions inside them faces (with the shape's normal). */
   covers?: CoverShape[];
-  /** Shapes whose regions must have no face, overriding everything else. */
+  /**
+   * Shapes that cancel out existing faces: where a cut overlaps an existing face
+   * the area gets no face at all (e.g. a notch wall lying over the block's side, or
+   * a pocket floor landing on the far side of the solid); where it overlaps
+   * nothing, it becomes a face with the cut's normal.
+   */
   cuts?: CoverShape[];
 }
 
 /**
  * Re-derives the faces of one plane from its edges (see the comment at the top).
- * Existing faces in the plane take priority over `covers`; `cuts` override both.
+ * `cuts` act first, then faces identical to existing ones are kept, then existing
+ * faces cover the regions inside them, then `covers`.
  */
 export function rebuildPlane(mesh: Mesh, plane: Plane, options: RebuildOptions = {}): void {
   const { touched = new Set<Edge>(), opts = {}, covers: extraCovers = [], cuts: cutShapes = [] } = options;
@@ -237,11 +243,9 @@ export function rebuildPlane(mesh: Mesh, plane: Plane, options: RebuildOptions =
   const regions = edges.length >= 3 ? findRegions(pts, edges.map((e) => [e.v0.id, e.v1.id] as const)) : [];
 
   const to2D = (loop: readonly XYZ[]) => loop.map((p) => proj.to2D(p));
-  const covers = [
-    ...[...faces].map((f) => ({ normal: f.normal, outer: to2D(f.outer.map((v) => v.pos)), holes: f.holes.map((h) => to2D(h.map((v) => v.pos))) })),
-    ...extraCovers.map((s) => ({ normal: s.normal, outer: to2D(s.outer), holes: s.holes.map(to2D) })),
-  ];
-  const cuts = cutShapes.map((s) => ({ outer: to2D(s.outer), holes: s.holes.map(to2D) }));
+  const faceCovers = [...faces].map((f) => ({ normal: f.normal, outer: to2D(f.outer.map((v) => v.pos)), holes: f.holes.map((h) => to2D(h.map((v) => v.pos))) }));
+  const covers = [...faceCovers, ...extraCovers.map((s) => ({ normal: s.normal, outer: to2D(s.outer), holes: s.holes.map(to2D) }))];
+  const cuts = cutShapes.map((s) => ({ normal: s.normal, outer: to2D(s.outer), holes: s.holes.map(to2D) }));
   const inside = (p: Vec2, c: { outer: Vec2[]; holes: Vec2[][] }) =>
     pointInPolygon2D(p, c.outer) && !c.holes.some((h) => pointInPolygon2D(p, h));
 
@@ -258,7 +262,12 @@ export function rebuildPlane(mesh: Mesh, plane: Plane, options: RebuildOptions =
       r.outer.map((id) => pts.get(id)!),
       r.holes.map((h) => h.map((id) => pts.get(id)!)),
     );
-    if (cuts.some((c) => inside(sample, c))) continue;
+    const cut = cuts.find((c) => inside(sample, c));
+    if (cut) {
+      // Overlapping an existing face: both cancel. Overlapping nothing: the cut's face.
+      if (!faceCovers.some((c) => inside(sample, c))) create.push({ outer, holes, normal: cut.normal });
+      continue;
+    }
     const same = byBoundary.get(boundaryKey([outer, ...holes].flatMap((l) => loopEdges(mesh, l))));
     if (same) {
       keep.add(same);
@@ -267,8 +276,14 @@ export function rebuildPlane(mesh: Mesh, plane: Plane, options: RebuildOptions =
     const cover = covers.find((c) => inside(sample, c));
     if (cover) {
       create.push({ outer, holes, normal: cover.normal });
-    } else if (loopEdges(mesh, outer).some((e) => touched.has(e))) {
-      create.push({ outer, holes, normal: chooseNormal(mesh, plane, outer, opts) });
+    } else {
+      // An empty region becomes a face when a newly drawn edge outlines it, unless
+      // every edge around it already borders two faces (e.g. the mouth of a hole
+      // through a solid): a face there would be a third face on those edges.
+      const outline = loopEdges(mesh, outer);
+      if (outline.some((e) => touched.has(e)) && outline.some((e) => e.faces.size < 2)) {
+        create.push({ outer, holes, normal: chooseNormal(mesh, plane, outer, opts) });
+      }
     }
   }
 

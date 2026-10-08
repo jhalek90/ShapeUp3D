@@ -20,7 +20,7 @@ const XZ: Basis = { u: Vec3.X, v: Vec3.Z, normal: Vec3.Y };
 const YZ: Basis = { u: Vec3.Y, v: Vec3.Z, normal: Vec3.X };
 
 /** Point kinds that should pull the corner to a specific spot (projected onto the rectangle's plane). */
-const SNAPS = new Set(['endpoint', 'midpoint', 'origin', 'on-edge', 'on-axis']);
+const SNAPS = new Set(['endpoint', 'midpoint', 'center', 'intersection', 'origin', 'on-edge', 'on-axis']);
 
 /**
  * Rectangle tool. Click one corner, then the opposite corner, or type "width, height".

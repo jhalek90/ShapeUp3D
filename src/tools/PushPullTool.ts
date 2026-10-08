@@ -1,6 +1,6 @@
 import { TOL, type Vec3 } from '../core/math';
 import type { Face, Mesh } from '../core/Mesh';
-import { pushPull } from '../core/pushpull';
+import { alignedFaceDistances, pushPull } from '../core/pushpull';
 import type { Inference } from '../inference/InferenceEngine';
 import { formatLength, parseLength } from '../units/length';
 import type { Overlay } from '../viewport/Overlay';
@@ -9,6 +9,8 @@ import { CtrlTap } from './locks';
 import type { Tool, ToolContext, ToolPointerEvent } from './Tool';
 
 const DRAG_PX = 6;
+/** Pixels within which the moving face snaps into the plane of a face in line with it. */
+const FACE_SNAP_PX = 10;
 
 interface Drag {
   faceId: number;
@@ -17,6 +19,8 @@ interface Drag {
   normal: Vec3;
   distance: number;
   press: { x: number; y: number };
+  /** Distances that put the face exactly on another face in line with it. */
+  snaps: number[];
 }
 
 /**
@@ -69,7 +73,14 @@ export class PushPullTool implements Tool {
     }
     const hit = this.ctx.inference.pick({ x: e.x, y: e.y, ray: this.ctx.viewport.ray(e.ndc) }, 'face');
     if (!hit?.face) return;
-    this.drag = { faceId: hit.face.id, origin: hit.point, normal: hit.face.normal, distance: 0, press: { x: e.x, y: e.y } };
+    this.drag = {
+      faceId: hit.face.id,
+      origin: hit.point,
+      normal: hit.face.normal,
+      distance: 0,
+      press: { x: e.x, y: e.y },
+      snaps: alignedFaceDistances(this.ctx.model.mesh, hit.face, hit.point),
+    };
     this.ctx.highlight();
     this.ctx.model.beginPreview();
     this.ctx.setStatus('Move to push or pull, then click — or type a distance. Ctrl = keep the original face.');
@@ -154,14 +165,41 @@ export class PushPullTool implements Tool {
       lock: { kind: 'line', origin: d.origin, dir: d.normal, tooltip: '' },
     });
     // Show what was snapped to (e.g. "Endpoint"), not the line lock.
-    this.current = { ...inf, tooltip: inf.refTooltip ?? '' };
+    this.current = { ...inf, tooltip: inf.refTooltip ?? '', refTooltip: undefined };
     d.distance = inf.point.sub(d.origin).dot(d.normal);
+    // Unless the cursor picked up a point, snap onto faces in line with this one
+    // (so a pocket can be pushed exactly down to the far side and punch through).
+    if (!inf.ref) {
+      const snapped = this.faceSnap(d, d.distance);
+      if (snapped !== null) {
+        d.distance = snapped;
+        this.current = { ...inf, point: d.origin.addScaled(d.normal, snapped), tooltip: 'On Face' };
+      }
+    }
     const keepBase = this.keepBase;
     this.ctx.model.showPreview((m) => {
       const face = m.faces.get(d.faceId);
       if (face) pushPull(m, face, d.distance, { keepBase });
     });
     this.ctx.setMeasurement('Distance', formatLength(Math.abs(d.distance), this.ctx.format));
+  }
+
+  /** The in-line face distance within a few pixels of `distance` on screen, if any. */
+  private faceSnap(d: Drag, distance: number): number | null {
+    const here = this.ctx.inference.screen(d.origin.addScaled(d.normal, distance));
+    if (!here) return null;
+    let best: number | null = null;
+    let bestPx = FACE_SNAP_PX;
+    for (const s of d.snaps) {
+      const there = this.ctx.inference.screen(d.origin.addScaled(d.normal, s));
+      if (!there) continue;
+      const px = Math.hypot(there.x - here.x, there.y - here.y);
+      if (px < bestPx) {
+        bestPx = px;
+        best = s;
+      }
+    }
+    return best;
   }
 
   private commit(distance: number): void {

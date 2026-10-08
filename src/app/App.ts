@@ -3,10 +3,13 @@ import { Vec3 } from '../core/math';
 import { Model } from '../core/Model';
 import { eraseEdges, eraseFaces } from '../core/ops';
 import { InferenceEngine, viewFromCamera } from '../inference/InferenceEngine';
+import { ArcTool } from '../tools/ArcTool';
+import { CircleTool } from '../tools/CircleTool';
 import { EraserTool } from '../tools/EraserTool';
 import { LineTool } from '../tools/LineTool';
 import { MoveTool } from '../tools/MoveTool';
 import { OrbitTool, PanTool, ZoomTool } from '../tools/navigationTools';
+import { OffsetTool } from '../tools/OffsetTool';
 import { PushPullTool } from '../tools/PushPullTool';
 import { RectangleTool } from '../tools/RectangleTool';
 import { RotateTool } from '../tools/RotateTool';
@@ -68,7 +71,11 @@ export class App {
       new SelectTool(),
       new EraserTool(),
       new LineTool(),
+      new ArcTool(),
       new RectangleTool(),
+      new CircleTool('circle', 'Circle', 'C', 'circle', 24),
+      new CircleTool('polygon', 'Polygon', undefined, 'polygon', 6),
+      new OffsetTool(),
       new PushPullTool(),
       new MoveTool(),
       new RotateTool(),
@@ -85,6 +92,9 @@ export class App {
       E: () => this.tools.activate('eraser'),
       L: () => this.tools.activate('line'),
       R: () => this.tools.activate('rectangle'),
+      A: () => this.tools.activate('arc'),
+      C: () => this.tools.activate('circle'),
+      F: () => this.tools.activate('offset'),
       P: () => this.tools.activate('pushpull'),
       M: () => this.tools.activate('move'),
       Q: () => this.tools.activate('rotate'),
@@ -199,14 +209,14 @@ export class App {
       { type: 'tool', id: 'eraser' },
       { type: 'separator' },
       { type: 'tool', id: 'line' },
-      { type: 'soon', label: 'Arc', shortcut: 'A' },
+      { type: 'tool', id: 'arc' },
       { type: 'tool', id: 'rectangle' },
-      { type: 'soon', label: 'Circle', shortcut: 'C' },
-      { type: 'soon', label: 'Polygon' },
+      { type: 'tool', id: 'circle' },
+      { type: 'tool', id: 'polygon' },
       { type: 'separator' },
       { type: 'tool', id: 'pushpull' },
       { type: 'soon', label: 'Follow Me' },
-      { type: 'soon', label: 'Offset', shortcut: 'F' },
+      { type: 'tool', id: 'offset' },
       { type: 'separator' },
       { type: 'tool', id: 'move' },
       { type: 'tool', id: 'rotate' },

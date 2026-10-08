@@ -10,7 +10,7 @@ export interface LineStyle {
   dash?: number[];
 }
 
-export type MarkerShape = 'circle' | 'square' | 'diamond' | 'dot';
+export type MarkerShape = 'circle' | 'square' | 'diamond' | 'dot' | 'cross';
 
 /**
  * A 2D canvas over the 3D view for things tools draw in screen space: rubber-band
@@ -124,6 +124,16 @@ export class Overlay {
       case 'dot':
         g.arc(s.x, s.y, 2.5, 0, Math.PI * 2);
         break;
+      case 'cross':
+        g.strokeStyle = color;
+        g.lineWidth = 2.5;
+        g.moveTo(s.x - 5, s.y - 5);
+        g.lineTo(s.x + 5, s.y + 5);
+        g.moveTo(s.x + 5, s.y - 5);
+        g.lineTo(s.x - 5, s.y + 5);
+        g.stroke();
+        g.restore();
+        return;
     }
     g.fill();
     if (shape !== 'dot') g.stroke();

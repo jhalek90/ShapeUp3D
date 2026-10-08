@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import type { Edge, Face } from '../core/Mesh';
+import { Vec3 } from '../core/math';
+import type { Edge, Face, Vertex } from '../core/Mesh';
 import type { Model } from '../core/Model';
-import { triangulateFace } from '../core/triangulate';
+import { triangulateFace, triangulateFaceVertices } from '../core/triangulate';
 
 // SketchUp's default style: white-ish front faces, blue-grey back faces, black edges.
 const FRONT_COLOR = 0xf4f4f2;
@@ -84,11 +85,12 @@ export class ModelRenderer {
 
     const positions: number[] = [];
     const normals: number[] = [];
+    const smooth = new SmoothNormals();
     for (const face of mesh.faces.values()) {
-      const n = face.normal;
-      for (const tri of triangulateFace(face)) {
-        for (const p of tri) {
-          positions.push(p.x, p.y, p.z);
+      for (const tri of triangulateFaceVertices(face)) {
+        for (const v of tri) {
+          const n = smooth.at(face, v);
+          positions.push(v.pos.x, v.pos.y, v.pos.z);
           normals.push(n.x, n.y, n.z);
         }
       }
@@ -130,5 +132,44 @@ export class ModelRenderer {
       h.edges.setAttribute('position', new THREE.Float32BufferAttribute(lines, 3));
       h.edges.computeBoundingSphere();
     }
+  }
+}
+
+/**
+ * Shading normals: a face's own normal, except at vertices where it meets other
+ * faces across smooth edges (e.g. the sides of a cylinder), where the normals of
+ * that whole smooth patch around the vertex are averaged so it shades as one surface.
+ */
+class SmoothNormals {
+  private readonly cache = new Map<string, Vec3>();
+
+  at(face: Face, v: Vertex): Vec3 {
+    let hasSmooth = false;
+    for (const e of v.edges) if (e.smooth && e.faces.has(face)) hasSmooth = true;
+    if (!hasSmooth) return face.normal;
+    const key = `${face.id}:${v.id}`;
+    const cached = this.cache.get(key);
+    if (cached) return cached;
+    // Faces around v reachable from `face` by crossing smooth edges at v.
+    const patch = new Set<Face>([face]);
+    const stack = [face];
+    while (stack.length > 0) {
+      const f = stack.pop()!;
+      for (const e of v.edges) {
+        if (!e.smooth || !e.faces.has(f)) continue;
+        for (const g of e.faces) {
+          // Only blend faces that roughly agree (not folded back on each other).
+          if (!patch.has(g) && g.normal.dot(face.normal) > 0) {
+            patch.add(g);
+            stack.push(g);
+          }
+        }
+      }
+    }
+    let sum = new Vec3();
+    for (const f of patch) sum = sum.add(f.normal);
+    const n = sum.normalize();
+    for (const f of patch) this.cache.set(`${f.id}:${v.id}`, n);
+    return n;
   }
 }

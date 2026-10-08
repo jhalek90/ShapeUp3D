@@ -130,3 +130,47 @@ describe('InferenceEngine visibility', () => {
     expect(r.point.z).toBeCloseTo(0, 6);
   });
 });
+
+describe('InferenceEngine intersections and locked lines', () => {
+  it('snaps to where an edge passes through a face', () => {
+    const { at } = setup((m) => {
+      drawPolyline(m, [new Vec3(0, 0, 0), new Vec3(60, 0, 0), new Vec3(60, 60, 0), new Vec3(0, 60, 0)], true);
+      // A post through the floor, not drawn into it.
+      m.addEdge(m.addVertex(new Vec3(30, 30, -10)), m.addVertex(new Vec3(30, 30, 30)));
+    });
+    const r = at(new Vec3(30, 30, 0), 3, 2);
+    expect(r.kind).toBe('intersection');
+    expect(r.point.distanceTo(new Vec3(30, 30, 0))).toBeLessThan(1e-9);
+  });
+
+  it('snaps to where two edges cross', () => {
+    const { at } = setup((m) => {
+      m.addEdge(m.addVertex(new Vec3(0, 20, 0)), m.addVertex(new Vec3(60, 20, 0)));
+      m.addEdge(m.addVertex(new Vec3(25, 0, 0)), m.addVertex(new Vec3(25, 50, 0)));
+    });
+    const r = at(new Vec3(25, 20, 0), -3, 2);
+    expect(r.kind).toBe('intersection');
+    expect(r.point.distanceTo(new Vec3(25, 20, 0))).toBeLessThan(1e-9);
+  });
+
+  it('a locked line stops exactly where it meets a hovered edge', () => {
+    const { at } = setup((m) => drawSegments(m, [[new Vec3(40, -20, 0), new Vec3(40, 30, 0)]]));
+    const from = new Vec3(0, 0, 0);
+    const lock = { kind: 'line' as const, origin: from, dir: AXIS_DIRS.x, axis: 'x' as const, tooltip: 'On Red Axis' };
+    const r = at(new Vec3(40, 18, 0), 2, 0, { from, lock });
+    expect(r.point.distanceTo(new Vec3(40, 0, 0))).toBeLessThan(1e-9);
+    expect(r.refTooltip).toBe('On Edge');
+  });
+
+  it('a locked line stops exactly where it pierces a hovered face', () => {
+    const { at } = setup((m) =>
+      drawPolyline(m, [new Vec3(-10, -10, 25), new Vec3(30, -10, 25), new Vec3(30, 30, 25), new Vec3(-10, 30, 25)], true, { facing: Vec3.Z }),
+    );
+    const from = new Vec3(5, 5, 0);
+    const lock = { kind: 'line' as const, origin: from, dir: AXIS_DIRS.z, axis: 'z' as const, tooltip: 'On Blue Axis' };
+    // Cursor somewhere else on the face, away from its edges.
+    const r = at(new Vec3(18, 12, 25), 0, 0, { from, lock });
+    expect(r.point.distanceTo(new Vec3(5, 5, 25))).toBeLessThan(1e-9);
+    expect(r.refTooltip).toBe('On Face');
+  });
+});

@@ -28,6 +28,9 @@ npm run build      # typecheck + production build into dist/
 - `L` Line: click points; type a length (e.g. `25`, `3'6"`, `1.5m`) + Enter for exact lines.
   Arrow keys lock an axis (→ red, ← green, ↑ blue); hold Shift to lock the current inference.
 - `R` Rectangle: click two corners, or click one and type `width, height`
+- `C` Circle / Polygon: click center, click or type radius. Type a number first to set sides.
+- `A` Arc: click start, click end, pull out the bulge (or type it, or a radius like `25r`).
+- `F` Offset: click a face, move in/out, click or type a distance.
 - `P` Push/Pull: click a face, move, click (or type a distance). Ctrl keeps the original face.
   Type a new value right after to change it; double-click a face to repeat.
 - `M` Move: moves the selection (or what's under the cursor). Tap Ctrl to copy;

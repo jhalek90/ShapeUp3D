@@ -63,14 +63,16 @@ export class EraserTool implements Tool {
   private mark(e: ToolPointerEvent): void {
     const hit = this.ctx.inference.pick({ x: e.x, y: e.y, ray: this.ctx.viewport.ray(e.ndc) }, 'edge');
     this.hover = hit?.edge ?? null;
-    if (this.marked && this.hover) this.marked.add(this.hover.id);
     const mesh = this.ctx.model.mesh;
+    // Erasing one segment of a curve erases the whole curve, as in SketchUp.
+    const hovered = this.hover ? (this.hover.curve ? mesh.curveEdges(this.hover.curve) : [this.hover]) : [];
+    if (this.marked) for (const e of hovered) this.marked.add(e.id);
     const shown = new Set<Edge>();
     for (const id of this.marked ?? []) {
       const edge = mesh.edges.get(id);
       if (edge) shown.add(edge);
     }
-    if (this.hover) shown.add(this.hover);
+    for (const e of hovered) shown.add(e);
     this.ctx.highlight([], shown);
   }
 }

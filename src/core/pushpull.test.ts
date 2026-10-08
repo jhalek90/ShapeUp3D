@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { Vec3 } from './math';
-import { Mesh, type Face } from './Mesh';
+import { faceContainsPoint, Mesh, type Face } from './Mesh';
 import { drawPolyline } from './ops';
-import { pushPull } from './pushpull';
+import { alignedFaceDistances, pushPull } from './pushpull';
 import { copyGeometry, rotation, transformVertices, translation } from './transform';
 import { triangulateFace } from './triangulate';
 
@@ -242,5 +242,132 @@ describe('transforms', () => {
     expectValid(mesh);
     // The shared wall's vertices are reused.
     expect(mesh.vertices.size).toBe(12);
+  });
+});
+
+describe('alignedFaceDistances', () => {
+  it('finds the far side of a block below a face on its top', () => {
+    const mesh = cube();
+    drawPolyline(mesh, rect(3, 3, 6, 6, 10), true, { facing: Vec3.Z });
+    const inner = [...mesh.faces.values()].find((f) => f.normal.z > 0.99 && f.holes.length === 0 && f.outer.every((x) => x.pos.x >= 3 && x.pos.x <= 6))!;
+    expect(alignedFaceDistances(mesh, inner, v(4.5, 4.5, 10))).toEqual([-10]);
+  });
+
+  it('ignores parallel faces that are not in line with the face', () => {
+    const mesh = cube();
+    // A second block off to the side, 25 tall.
+    drawPolyline(mesh, rect(30, 0, 40, 10), true);
+    const base = [...mesh.faces.values()].find((f) => f.normal.z < -0.99 && f.outer.every((x) => x.pos.x >= 30))!;
+    pushPull(mesh, base, -25);
+    const top = faceAtZ(mesh, 10, true);
+    expect(alignedFaceDistances(mesh, top, v(5, 5, 10))).toEqual([-10]);
+  });
+});
+
+/** Vertices sitting on the middle of another edge (should have been joined into it). */
+function tJunctions(mesh: Mesh): number {
+  const edges = [...mesh.edges.values()];
+  return [...mesh.vertices.values()].filter((x) =>
+    edges.some((e) => {
+      if (e.has(x)) return false;
+      const ab = e.v1.pos.sub(e.v0.pos);
+      const t = x.pos.sub(e.v0.pos).dot(ab) / ab.lengthSq();
+      return t > 1e-6 && t < 1 - 1e-6 && e.v0.pos.lerp(e.v1.pos, t).distanceTo(x.pos) < 1e-3;
+    }),
+  ).length;
+}
+
+describe('pushPull cleanliness', () => {
+  const slot = (mesh: Mesh, z: number) =>
+    [...mesh.faces.values()].find((f) => f.normal.z > 0.99 && f.outer.every((x) => x.pos.x >= 10 - 1e-9 && x.pos.x <= 14 + 1e-9 && Math.abs(x.pos.z - z) < 1e-9))!;
+
+  function tallBlock(): Mesh {
+    const mesh = new Mesh();
+    drawPolyline(mesh, rect(0, 0, 40, 30), true);
+    pushPull(mesh, [...mesh.faces.values()][0]!, -20);
+    return mesh;
+  }
+
+  it('deepening an edge notch to the bottom splits the front face cleanly (no T-junctions)', () => {
+    const mesh = tallBlock();
+    drawPolyline(mesh, rect(10, 0, 14, 20, 20), true, { facing: Vec3.Z });
+    pushPull(mesh, slot(mesh, 20), -8);
+    pushPull(mesh, slot(mesh, 12), -12);
+    expectValid(mesh);
+    expect(isClosed(mesh)).toBe(true);
+    expect(tJunctions(mesh)).toBe(0);
+    expect(volume(mesh)).toBeCloseTo(24000 - 4 * 20 * 20);
+    // Front face is now two separate faces either side of the slot.
+    expect([...mesh.faces.values()].filter((f) => f.normal.y < -0.99 && Math.abs(f.outer[0]!.pos.y) < 1e-9)).toHaveLength(2);
+  });
+
+  it('a slot right across the top cuts the block in two', () => {
+    const mesh = tallBlock();
+    drawPolyline(mesh, rect(10, 0, 14, 30, 20), true, { facing: Vec3.Z });
+    pushPull(mesh, slot(mesh, 20), -20);
+    expectValid(mesh);
+    expect(isClosed(mesh)).toBe(true);
+    expect(mesh.faces.size).toBe(12);
+    expect(volume(mesh)).toBeCloseTo(24000 - 4 * 30 * 20);
+  });
+
+  it('random rectangles pushed and pulled on a block stay clean', () => {
+    let seed = 7;
+    const rand = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+    const snap = (x: number) => Math.round(x / 2) * 2; // a 2 mm grid, so shapes often touch edges
+    for (let run = 0; run < 60; run++) {
+      const mesh = tallBlock();
+      for (let step = 0; step < 4; step++) {
+        // A rectangle on the top face (z = 20), sometimes touching the outline.
+        const x0 = snap(rand() * 30);
+        const y0 = snap(rand() * 20);
+        const x1 = Math.min(40, x0 + 2 + snap(rand() * 12));
+        const y1 = Math.min(30, y0 + 2 + snap(rand() * 12));
+        const top = [...mesh.faces.values()].filter((f) => f.normal.z > 0.99 && Math.abs(f.outer[0]!.pos.z - 20) < 1e-9);
+        if (top.length === 0) break;
+        // Only draw on solid top surface: drawing across the open mouth of an earlier
+        // hole would (as in SketchUp) fill part of it, which isn't what this tests.
+        const onSolid = (x: number, y: number) => top.some((f) => faceContainsPoint(f, v(x, y, 20)));
+        let solid = true;
+        for (let i = 0; i <= 8; i++) for (let j = 0; j <= 8; j++) solid &&= onSolid(x0 + ((x1 - x0) * (i + 0.5)) / 9.5, y0 + ((y1 - y0) * (j + 0.5)) / 9.5);
+        if (!solid) continue;
+        drawPolyline(mesh, rect(x0, y0, x1, y1, 20), true, { facing: Vec3.Z });
+        const cx = (x0 + x1) / 2;
+        const cy = (y0 + y1) / 2;
+        const target = [...mesh.faces.values()].find(
+          (f) => f.normal.z > 0.99 && Math.abs(f.outer[0]!.pos.z - 20) < 1e-9 && f.outer.every((v) => v.pos.x >= x0 - 1e-9 && v.pos.x <= x1 + 1e-9 && v.pos.y >= y0 - 1e-9 && v.pos.y <= y1 + 1e-9),
+        );
+        if (!target) continue;
+        // Often exactly through (punch), sometimes part way, sometimes up.
+        const r = rand();
+        const d = r < 0.4 ? -20 : r < 0.8 ? -snap(2 + rand() * 14) : snap(2 + rand() * 8);
+        pushPull(mesh, target, d);
+        const label = `run ${run} step ${step}: rect (${x0},${y0})-(${x1},${y1}) at (${cx},${cy}) by ${d}`;
+        const problems = mesh.validate();
+        if (problems.length) throw new Error(`${label}: ${problems.join('; ')}`);
+        // Watertight: every edge borders an even number of faces. Usually 2; 4 where two
+        // cut-outs happen to meet along a single line (correct, if unusual, geometry).
+        const open = [...mesh.edges.values()].filter((e) => e.faces.size === 0 || e.faces.size % 2 !== 0);
+        if (open.length) throw new Error(`${label}: ${open.length} edges with an odd number of faces`);
+        const tj = tJunctions(mesh);
+        if (tj) throw new Error(`${label}: ${tj} T-junctions`);
+      }
+    }
+  });
+});
+
+describe('drawing over holes', () => {
+  it('drawing a rectangle along the edge of a through-hole does not cap the hole', () => {
+    const mesh = new Mesh();
+    drawPolyline(mesh, rect(0, 0, 40, 30), true);
+    pushPull(mesh, [...mesh.faces.values()][0]!, -20);
+    drawPolyline(mesh, rect(6, 20, 8, 26, 20), true, { facing: Vec3.Z });
+    const sq = [...mesh.faces.values()].find((f) => f.normal.z > 0.99 && f.outer.length === 4 && f.outer.every((v) => v.pos.x >= 6 && v.pos.x <= 8))!;
+    pushPull(mesh, sq, -20);
+    const faces = mesh.faces.size;
+    // A rectangle whose edge runs along the hole's back edge.
+    drawPolyline(mesh, rect(2, 14, 16, 26, 20), true, { facing: Vec3.Z });
+    expect(mesh.faces.size).toBe(faces + 1); // just the new rectangle splitting the top
+    expect(isClosed(mesh)).toBe(true);
   });
 });

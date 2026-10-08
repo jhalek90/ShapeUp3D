@@ -1,5 +1,5 @@
 import { Plane, PlaneProjector, Vec3 } from './math';
-import type { Edge, Face, Mesh, Vertex } from './Mesh';
+import type { CurveInfo, Edge, Face, Mesh, Vertex } from './Mesh';
 import { triangulate2D } from './triangulate';
 
 /** A point-to-point mapping used to move, rotate or copy geometry. */
@@ -26,6 +26,13 @@ export function rotation(center: Vec3, axis: Vec3, angle: number): PointMap {
   };
 }
 
+/** A curve's info carried through a rigid transform. */
+export function mapCurveInfo(info: CurveInfo, map: PointMap): CurveInfo {
+  if (!info.center || !info.normal) return { ...info };
+  const center = map(info.center);
+  return { kind: info.kind, center, normal: map(info.center.add(info.normal)).sub(center).normalize(), radius: info.radius };
+}
+
 /** All vertices used by the given faces and edges. */
 export function verticesOf(faces: Iterable<Face>, edges: Iterable<Edge>): Set<Vertex> {
   const out = new Set<Vertex>();
@@ -44,8 +51,22 @@ export function verticesOf(faces: Iterable<Face>, edges: Iterable<Edge>): Set<Ve
  */
 export function transformVertices(mesh: Mesh, vertices: Iterable<Vertex>, map: PointMap): void {
   const moved = [...new Set(vertices)];
+  const movedSet = new Set(moved);
   const faces = new Set<Face>();
-  for (const v of moved) for (const e of v.edges) for (const f of e.faces) faces.add(f);
+  const curves = new Set<number>();
+  for (const v of moved) {
+    for (const e of v.edges) {
+      for (const f of e.faces) faces.add(f);
+      if (e.curve) curves.add(e.curve);
+    }
+  }
+  // A curve moved as a whole keeps its center; one that's partly moved is distorted.
+  for (const id of curves) {
+    const info = mesh.curves.get(id);
+    if (!info) continue;
+    const whole = mesh.curveEdges(id).every((e) => movedSet.has(e.v0) && movedSet.has(e.v1));
+    mesh.curves.set(id, whole ? mapCurveInfo(info, map) : { kind: info.kind });
+  }
 
   const targets = moved.map((v) => map(v.pos));
   moved.forEach((v, i) => mesh.moveVertex(v, targets[i]!));
@@ -102,7 +123,18 @@ export function copyGeometry(mesh: Mesh, faces: Iterable<Face>, edges: Iterable<
   const edgeSet = new Set(edges);
   for (const f of faceList) for (const e of mesh.faceEdges(f)) edgeSet.add(e);
   // Capture everything before adding geometry (copies may weld onto the originals).
-  const edgeData = [...edgeSet].map((e) => ({ v0: e.v0, v1: e.v1, soft: e.soft, smooth: e.smooth, hidden: e.hidden }));
+  const edgeData = [...edgeSet].map((e) => ({ v0: e.v0, v1: e.v1, soft: e.soft, smooth: e.smooth, hidden: e.hidden, curve: e.curve }));
+  const curveCopies = new Map<number, number>();
+  const copyCurve = (id: number) => {
+    if (!id) return 0;
+    let c = curveCopies.get(id);
+    if (c === undefined) {
+      const info = mesh.curves.get(id);
+      c = info ? mesh.addCurve(mapCurveInfo(info, map)) : 0;
+      curveCopies.set(id, c);
+    }
+    return c;
+  };
   const faceData = faceList.map((f) => ({ outer: [...f.outer], holes: f.holes.map((h) => [...h]), normal: f.normal, anchor: f.outer[0]!.pos }));
 
   const copies = new Map<Vertex, Vertex>();
@@ -118,10 +150,12 @@ export function copyGeometry(mesh: Mesh, faces: Iterable<Face>, edges: Iterable<
     const a = dup(e.v0);
     const b = dup(e.v1);
     if (a === b) continue;
-    const ne = mesh.addEdge(a, b);
+    const existed = mesh.edgeBetween(a, b);
+    const ne = existed ?? mesh.addEdge(a, b);
     ne.soft ||= e.soft;
     ne.smooth ||= e.smooth;
     ne.hidden ||= e.hidden;
+    if (!existed) ne.curve = copyCurve(e.curve);
   }
   for (const f of faceData) {
     const normal = map(f.anchor.add(f.normal)).sub(map(f.anchor)).normalize();

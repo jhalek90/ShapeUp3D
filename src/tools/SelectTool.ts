@@ -86,7 +86,10 @@ export class SelectTool implements Tool {
     }
     const entity: Entity = (hit.edge ?? hit.face)!;
     const mesh = this.ctx.model.mesh;
-    const entities = extent === 'single' ? [entity] : extent === 'neighbours' ? neighbours(mesh, entity) : connected(mesh, entity);
+    // An edge of a circle or arc stands for the whole curve.
+    const base: Entity[] = hit.edge?.curve ? mesh.curveEdges(hit.edge.curve) : [entity];
+    const entities =
+      extent === 'single' ? base : extent === 'neighbours' ? [...new Set(base.flatMap((x) => neighbours(mesh, x)))] : connected(mesh, entity);
     // A double-click's first click already selected (or toggled) the entity; don't undo that.
     apply(this.ctx, extent !== 'single' && m === 'toggle' ? 'add' : m, entities);
   }

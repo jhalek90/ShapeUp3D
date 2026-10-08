@@ -174,8 +174,10 @@ Measurements box wired to the parser. Deploy instructions.
 - **Line** (chains, ends on closing a face, typed lengths, click-drag-release) and
   **Rectangle** (on faces or axis planes, typed "w, h").
 - Edit menu + Ctrl+Z / Ctrl+Y.
+- Intersection inference: edge × edge and edge through face (black ✕).
+- Locked lines (arrows / Shift) stop exactly where they meet a hovered edge or face.
 - Still to add later: parallel/perpendicular (magenta) inference, "from point"
-  dotted-line tracking, intersection points.
+  dotted-line tracking.
 
 ### M4 — Core editing ✅
 - **Select**: click / double-click (neighbours) / triple-click (connected),
@@ -191,14 +193,32 @@ Measurements box wired to the parser. Deploy instructions.
 - Moved geometry stretches neighbours, welds onto vertices it lands on, and
   non-planar faces fold into soft-edged triangles.
 - Pushing a face down onto the far side of a solid punches a hole through (both
-  for a fresh pocket and for deepening an existing one).
+  for a fresh pocket and for deepening an existing one). While dragging, the face
+  snaps into the plane of any parallel face in line with it ("On Face").
+- After every push/pull a tidy pass joins vertices that landed on edges (no
+  T-junctions), re-derives the faces of the planes involved (a face split by a slot
+  becomes two faces) and removes edges left bounding nothing. Side faces only partly
+  overlapping a neighbour cut just the overlap. Checked by a randomized test of
+  hundreds of push/pull sequences (valid, watertight, no T-junctions).
+- Drawing never auto-fills a region whose edges all already border two faces
+  (e.g. the mouth of a through-hole), which would make non-manifold geometry.
 - Known limits: moved/copied geometry doesn't split edges it crosses; pushing a face
-  *past* the far side doesn't intersect it.
+  *past* the far side doesn't intersect it; drawing a shape across the mouth of a
+  hole fills the part inside the shape (as SketchUp does).
 
-### M5 — Curves & offset
-- **Circle**, **Polygon**, **Arc** (2-point, 3-point, center, pie), segment count via VCB.
-- Curves are edge sequences remembered as one "curve" entity for selection.
-- **Offset** (faces and connected edges).
+### M5 — Curves & offset ✅
+- Curves: edges of a circle/arc/polygon share a curve id (`core/Mesh.ts`), so they
+  select and erase as one; circles/arcs remember their center for "Center" inference.
+  Curves follow moves/rotations/copies and are dropped to plain edges when distorted.
+- **Circle** (C, 24 sides) and **Polygon** (6 sides): on the face under the center or
+  the ground; arrows stand it on an axis; type sides before clicking (or "Ns").
+- **Arc** (A, 2-point with bulge): typed bulge or radius ("25r"), half-circle snap,
+  "Ns" segments.
+- **Offset** (F): offsets a face's loops in or out (mitred corners), circles stay
+  circles; double-click repeats.
+- Push/Pull of circles/arcs makes soft, smooth side edges; the renderer shades across
+  smooth edges so cylinders and round holes look round.
+- Not yet: 3-point arc, pie, tangent-arc inference, offset of selected edges (only faces).
 
 ### M6 — Organization, measurement, files
 - **Groups** and **Components** (edit context, isolation of geometry).

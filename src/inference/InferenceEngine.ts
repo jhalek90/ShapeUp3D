@@ -1,34 +1,40 @@
 import * as THREE from 'three';
-import {
-  closestLineParam,
-  Plane,
-  PlaneProjector,
-  pointInPolygon2D,
-  TOL,
-  Vec3,
-  type XYZ,
-} from '../core/math';
-import type { Edge, Face, Mesh, Vertex } from '../core/Mesh';
+import { closestLineParam, closestPointOnSegment, closestSegmentSegment, Plane, TOL, Vec3, type XYZ } from '../core/math';
+import { faceContainsPoint, type Edge, type Face, type Mesh, type Vertex } from '../core/Mesh';
 import type { CameraController } from '../viewport/CameraController';
 
 // Inference ("snapping"): turns a cursor position into a meaningful 3D point.
 //
 // Priority, highest first (as in SketchUp):
 //   1. A lock (arrow keys / Shift) constrains everything to a line or plane.
-//   2. Points: endpoints, midpoints, the origin.
+//   2. Points: endpoints, midpoints, centers of circles and arcs, intersections
+//      (edge with edge, edge through face), the origin.
 //   3. On an edge.
 //   4. Along a red/green/blue axis from the start point.
 //   5. On a face.
 //   6. On a world axis.
 //   7. A free point on the drawing plane.
 // Geometry hidden behind the face under the cursor is ignored.
+//
+// With a line lock, hovering an edge or face stops the point exactly where the
+// locked line meets it (draw "along red until that wall").
 
 export type Axis = 'x' | 'y' | 'z';
 export const AXIS_DIRS: Record<Axis, Vec3> = { x: Vec3.X, y: Vec3.Y, z: Vec3.Z };
 export const AXIS_COLORS: Record<Axis, string> = { x: '#d42020', y: '#1f9d1f', z: '#2448d8' };
 const AXIS_NAMES: Record<Axis, string> = { x: 'Red', y: 'Green', z: 'Blue' };
 
-export type InferenceKind = 'endpoint' | 'midpoint' | 'origin' | 'on-edge' | 'axis' | 'on-face' | 'on-axis' | 'free';
+export type InferenceKind =
+  | 'endpoint'
+  | 'midpoint'
+  | 'center'
+  | 'intersection'
+  | 'origin'
+  | 'on-edge'
+  | 'axis'
+  | 'on-face'
+  | 'on-axis'
+  | 'free';
 
 export interface Inference {
   point: Vec3;
@@ -121,7 +127,7 @@ export class InferenceEngine {
     const point = this.nearestPoint(cursor, visible);
     const edge = point ? null : this.nearestEdge(cursor, origin, dir, visible);
 
-    if (q.lock) return this.constrain(q.lock, point ?? edge, origin, dir, q);
+    if (q.lock) return this.constrain(q.lock, point ?? edge, faceHit?.face ?? null, origin, dir, q);
     if (point) return point;
     if (edge) return edge;
     if (q.from) {
@@ -180,20 +186,66 @@ export class InferenceEngine {
       }
     };
     for (const v of this.mesh.vertices.values()) {
+      if (![...v.edges].some(isVisibleEdge)) continue;
       consider(v.pos, () => ({ point: v.pos, kind: 'endpoint', tooltip: 'Endpoint', vertex: v }));
     }
     for (const e of this.mesh.edges.values()) {
+      if (!isVisibleEdge(e)) continue;
       const m = e.midpoint;
       consider(m, () => ({ point: m, kind: 'midpoint', tooltip: 'Midpoint', edge: e }));
     }
+    for (const c of this.mesh.curves.values()) {
+      const center = c.center;
+      if (center) consider(center, () => ({ point: center, kind: 'center', tooltip: 'Center' }));
+    }
     consider(Vec3.ZERO, () => ({ point: Vec3.ZERO, kind: 'origin', tooltip: 'Origin' }));
+    this.intersections(cursor, consider);
     return best;
+  }
+
+  /**
+   * Intersection points near the cursor: edges crossing each other (geometry that
+   * wasn't drawn into each other, e.g. after a move) and edges passing through faces.
+   */
+  private intersections(cursor: { x: number; y: number }, consider: (p: Vec3, make: () => Inference) => void): void {
+    const near: Edge[] = [];
+    for (const e of this.mesh.edges.values()) {
+      if (!isVisibleEdge(e)) continue;
+      const a = this.view.project(e.v0.pos);
+      const b = this.view.project(e.v1.pos);
+      if (a && b && distanceToSegment2D(cursor, a, b) < POINT_PX) near.push(e);
+    }
+    const isEnd = (p: Vec3, e: Edge) => p.equals(e.v0.pos) || p.equals(e.v1.pos);
+    const hit = (p: Vec3, edge: Edge): Inference => ({ point: p, kind: 'intersection', tooltip: 'Intersection', edge });
+    for (let i = 0; i < near.length; i++) {
+      for (let j = i + 1; j < near.length; j++) {
+        const a = near[i]!;
+        const b = near[j]!;
+        const c = closestSegmentSegment(a.v0.pos, a.v1.pos, b.v0.pos, b.v1.pos);
+        if (c.distance > TOL) continue;
+        const p = c.p.lerp(c.q, 0.5);
+        if (isEnd(p, a) && isEnd(p, b)) continue; // a shared corner is just an endpoint
+        consider(p, () => hit(p, a));
+      }
+    }
+    // Edges passing through faces.
+    for (const e of near) {
+      for (const f of this.mesh.faces.values()) {
+        const plane = f.plane;
+        const s0 = plane.signedDistance(e.v0.pos);
+        const s1 = plane.signedDistance(e.v1.pos);
+        if (s0 * s1 >= 0 || Math.abs(s0) <= TOL || Math.abs(s1) <= TOL) continue;
+        const p = e.v0.pos.lerp(e.v1.pos, s0 / (s0 - s1));
+        if (faceContainsPoint(f, p)) consider(p, () => hit(p, e));
+      }
+    }
   }
 
   private nearestEdge(cursor: { x: number; y: number }, origin: Vec3, dir: Vec3, visible: (p: Vec3) => boolean): Inference | null {
     let best: Inference | null = null;
     let bestDist = EDGE_PX;
     for (const e of this.mesh.edges.values()) {
+      if (!isVisibleEdge(e)) continue;
       const a = this.view.project(e.v0.pos);
       const b = this.view.project(e.v1.pos);
       if (!a || !b) continue;
@@ -244,14 +296,36 @@ export class InferenceEngine {
     return best;
   }
 
-  private constrain(lock: InferenceLock, snap: Inference | null, origin: Vec3, dir: Vec3, q: InferenceQuery): Inference {
+  private constrain(lock: InferenceLock, snap: Inference | null, face: Face | null, origin: Vec3, dir: Vec3, q: InferenceQuery): Inference {
     if (lock.kind === 'line') {
       const ldir = lock.dir.normalize();
-      const p = snap
-        ? lock.origin.addScaled(ldir, snap.point.sub(lock.origin).dot(ldir))
-        : (pointOnLineNearRay(lock.origin, ldir, origin, dir) ?? lock.origin);
-      const ref = snap && !snap.point.equals(p) ? snap.point : undefined;
-      return { point: p, kind: 'axis', tooltip: lock.tooltip, axis: lock.axis, ref, refTooltip: snap?.tooltip };
+      const result = (p: Vec3, ref: Vec3 | undefined, refTooltip: string | undefined): Inference => ({
+        point: p,
+        kind: 'axis',
+        tooltip: lock.tooltip,
+        axis: lock.axis,
+        ref: ref && !ref.equals(p) ? ref : undefined,
+        refTooltip,
+      });
+      if (snap?.kind === 'on-edge' && snap.edge) {
+        // Where the locked line passes closest to the edge (exactly through it if they meet).
+        const e = snap.edge;
+        const s = closestLineParam(lock.origin, ldir, e.v0.pos, e.v1.pos.sub(e.v0.pos));
+        if (s !== null) {
+          const p = lock.origin.addScaled(ldir, s);
+          return result(p, closestPointOnSegment(p, e.v0.pos, e.v1.pos).point, 'On Edge');
+        }
+      }
+      if (snap) return result(lock.origin.addScaled(ldir, snap.point.sub(lock.origin).dot(ldir)), snap.point, snap.tooltip);
+      if (face) {
+        // Where the locked line pierces the face under the cursor (not its own start face).
+        const t = face.plane.intersectRay(lock.origin, ldir);
+        if (t !== null && Math.abs(t) > TOL) {
+          const p = lock.origin.addScaled(ldir, t);
+          if (faceContainsPoint(face, p)) return result(p, undefined, 'On Face');
+        }
+      }
+      return result(pointOnLineNearRay(lock.origin, ldir, origin, dir) ?? lock.origin, undefined, undefined);
     }
     if (snap) {
       const p = lock.plane.projectPoint(snap.point);
@@ -284,18 +358,18 @@ export class InferenceEngine {
   private raycastFaces(origin: Vec3, dir: Vec3): { face: Face; point: Vec3; t: number } | null {
     let best: { face: Face; point: Vec3; t: number } | null = null;
     for (const face of this.mesh.faces.values()) {
-      const plane = face.plane;
-      const t = plane.intersectRay(origin, dir);
+      const t = face.plane.intersectRay(origin, dir);
       if (t === null || (this.view.perspective && t <= 0) || (best && t >= best.t)) continue;
       const p = origin.addScaled(dir, t);
-      const proj = new PlaneProjector(plane);
-      const p2 = proj.to2D(p);
-      if (!pointInPolygon2D(p2, face.outer.map((v) => proj.to2D(v.pos)))) continue;
-      if (face.holes.some((h) => pointInPolygon2D(p2, h.map((v) => proj.to2D(v.pos))))) continue;
-      best = { face, point: p, t };
+      if (faceContainsPoint(face, p)) best = { face, point: p, t };
     }
     return best;
   }
+}
+
+/** Soft and hidden edges aren't drawn, so they aren't snapped to either. */
+function isVisibleEdge(e: Edge): boolean {
+  return !e.soft && !e.hidden;
 }
 
 /**

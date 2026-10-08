@@ -1,6 +1,6 @@
 import earcut from 'earcut';
 import { PlaneProjector, type Vec2, Vec3 } from './math';
-import type { Face } from './Mesh';
+import type { Face, Vertex } from './Mesh';
 
 /**
  * Triangulates a 2D polygon with holes. Returns index triples into the
@@ -39,20 +39,24 @@ export function interiorPoint2D(outer: readonly Vec2[], holes: readonly (readonl
   return { x: outer.reduce((s, p) => s + p.x, 0) / n, y: outer.reduce((s, p) => s + p.y, 0) / n };
 }
 
-/** Triangles of a face as world-space vertex triples, wound counter-clockwise around its normal. */
-export function triangulateFace(face: Face): [Vec3, Vec3, Vec3][] {
+/** Triangles of a face as vertex triples, wound counter-clockwise around its normal. */
+export function triangulateFaceVertices(face: Face): [Vertex, Vertex, Vertex][] {
   const proj = new PlaneProjector(face.plane);
-  const loops3 = face.loops.map((l) => l.map((v) => v.pos));
-  const all3 = loops3.flat();
-  const [outer2, ...holes2] = loops3.map((l) => l.map((p) => proj.to2D(p)));
+  const all = face.loops.flat();
+  const [outer2, ...holes2] = face.loops.map((l) => l.map((v) => proj.to2D(v.pos)));
   const tris = triangulate2D(outer2!, holes2);
-  const out: [Vec3, Vec3, Vec3][] = [];
+  const out: [Vertex, Vertex, Vertex][] = [];
   for (let i = 0; i < tris.length; i += 3) {
-    const a = all3[tris[i]!]!;
-    const b = all3[tris[i + 1]!]!;
-    const c = all3[tris[i + 2]!]!;
-    const n = b.sub(a).cross(c.sub(a));
+    const a = all[tris[i]!]!;
+    const b = all[tris[i + 1]!]!;
+    const c = all[tris[i + 2]!]!;
+    const n = b.pos.sub(a.pos).cross(c.pos.sub(a.pos));
     out.push(n.dot(face.normal) >= 0 ? [a, b, c] : [a, c, b]);
   }
   return out;
+}
+
+/** Triangles of a face as world-space point triples, wound counter-clockwise around its normal. */
+export function triangulateFace(face: Face): [Vec3, Vec3, Vec3][] {
+  return triangulateFaceVertices(face).map(([a, b, c]) => [a.pos, b.pos, c.pos]);
 }

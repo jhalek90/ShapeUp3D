@@ -1,4 +1,4 @@
-import { newellNormal, Plane, TOL, Vec3, type XYZ } from './math';
+import { newellNormal, Plane, PlaneProjector, pointInPolygon2D, TOL, Vec3, type XYZ } from './math';
 
 // The edge/face model. See PLAN.md "Geometry data model".
 //
@@ -11,6 +11,25 @@ import { newellNormal, Plane, TOL, Vec3, type XYZ } from './math';
 //
 // Mesh methods here are low-level and keep these invariants; the SketchUp-style
 // behaviours (auto faces, splitting, merging) live in ops.ts.
+//
+// Curves: edges drawn as one circle, arc or polygon share a curve id, so they select
+// and erase together. The curve's info (center, radius) powers center inference and
+// is dropped (`center` unset) if the curve gets distorted.
+
+export type CurveKind = 'circle' | 'arc' | 'polygon';
+
+export interface CurveInfo {
+  kind: CurveKind;
+  /** Unset once the curve has been distorted and no longer has a true center. */
+  center?: Vec3;
+  normal?: Vec3;
+  radius?: number;
+}
+
+/** Curves whose extrusions read as smooth surfaces (polygons stay faceted). */
+export function isSmoothCurve(kind: CurveKind | undefined): boolean {
+  return kind === 'circle' || kind === 'arc';
+}
 
 export class Vertex {
   readonly edges = new Set<Edge>();
@@ -26,6 +45,8 @@ export class Edge {
   soft = false;
   smooth = false;
   hidden = false;
+  /** Curve this edge belongs to (0 = none). */
+  curve = 0;
 
   constructor(
     readonly id: number,
@@ -77,14 +98,32 @@ export class Face {
   }
 }
 
+/** True if p (assumed on the face's plane) is inside the face: in its outline, not in a hole. */
+export function faceContainsPoint(face: Face, p: XYZ): boolean {
+  const proj = new PlaneProjector(face.plane);
+  const q = proj.to2D(p);
+  if (!pointInPolygon2D(q, face.outer.map((v) => proj.to2D(v.pos)))) return false;
+  return !face.holes.some((h) => pointInPolygon2D(q, h.map((v) => proj.to2D(v.pos))));
+}
+
 export interface MeshJSON {
   nextId: number;
   /** [id, x, y, z] */
   vertices: [number, number, number, number][];
-  /** [id, v0, v1, flags] with flags bit 0 soft, 1 smooth, 2 hidden */
-  edges: [number, number, number, number][];
+  /** [id, v0, v1, flags, curve] with flags bit 0 soft, 1 smooth, 2 hidden */
+  edges: [number, number, number, number, number][];
   /** [id, outer vertex ids, hole vertex id lists, normal] */
   faces: [number, number[], number[][], [number, number, number]][];
+  /** [id, kind, center or null, normal or null, radius or null] */
+  curves?: [number, CurveKind, number[] | null, number[] | null, number | null][];
+}
+
+/** Copies an edge's display flags and curve onto another edge. */
+export function copyEdgeAttributes(from: Edge, to: Edge): void {
+  to.soft = from.soft;
+  to.smooth = from.smooth;
+  to.hidden = from.hidden;
+  to.curve = from.curve;
 }
 
 /** Spatial hash cell size; any size >= TOL works since lookups check neighbouring cells. */
@@ -94,6 +133,7 @@ export class Mesh {
   readonly vertices = new Map<number, Vertex>();
   readonly edges = new Map<number, Edge>();
   readonly faces = new Map<number, Face>();
+  readonly curves = new Map<number, CurveInfo>();
 
   private nextId = 1;
   private readonly grid = new Map<string, Vertex[]>();
@@ -220,11 +260,8 @@ export class Mesh {
 
     const e0 = this.addEdge(v0, v);
     const e1 = this.addEdge(v, v1);
-    for (const ne of [e0, e1]) {
-      ne.soft = e.soft;
-      ne.smooth = e.smooth;
-      ne.hidden = e.hidden;
-    }
+    copyEdgeAttributes(e, e0);
+    copyEdgeAttributes(e, e1);
     for (const f of faces) {
       for (const loop of f.loops) {
         for (let i = 0; i < loop.length; i++) {
@@ -265,7 +302,7 @@ export class Mesh {
         if (i >= 0) loop.splice(i, 1);
       }
     }
-    const flags = { soft: ea.soft && eb.soft, smooth: ea.smooth && eb.smooth, hidden: ea.hidden && eb.hidden };
+    const flags = { soft: ea.soft && eb.soft, smooth: ea.smooth && eb.smooth, hidden: ea.hidden && eb.hidden, curve: ea.curve === eb.curve ? ea.curve : 0 };
     for (const e of [ea, eb]) {
       this.edges.delete(e.id);
       e.v0.edges.delete(e);
@@ -301,7 +338,7 @@ export class Mesh {
       if (other === into) continue; // the edge between them collapses
       const existed = this.edgeBetween(into, other);
       const target = existed ?? this.addEdge(into, other);
-      if (!existed) Object.assign(target, { soft: e.soft, smooth: e.smooth, hidden: e.hidden });
+      if (!existed) copyEdgeAttributes(e, target);
     }
 
     for (const f of faces) {
@@ -320,6 +357,20 @@ export class Mesh {
       }
     }
     this.removeVertex(v);
+  }
+
+  // ---- Curves --------------------------------------------------------------
+
+  addCurve(info: CurveInfo): number {
+    const id = this.nextId++;
+    this.curves.set(id, info);
+    return id;
+  }
+
+  /** All edges of a curve. */
+  curveEdges(id: number): Edge[] {
+    if (!id) return [];
+    return [...this.edges.values()].filter((e) => e.curve === id);
   }
 
   // ---- Faces ---------------------------------------------------------------
@@ -412,6 +463,8 @@ export class Mesh {
   // ---- Serialization -------------------------------------------------------
 
   toJSON(): MeshJSON {
+    const usedCurves = new Set<number>();
+    for (const e of this.edges.values()) if (e.curve) usedCurves.add(e.curve);
     return {
       nextId: this.nextId,
       vertices: [...this.vertices.values()].map((v) => [v.id, v.pos.x, v.pos.y, v.pos.z]),
@@ -420,7 +473,12 @@ export class Mesh {
         e.v0.id,
         e.v1.id,
         (e.soft ? 1 : 0) | (e.smooth ? 2 : 0) | (e.hidden ? 4 : 0),
+        e.curve,
       ]),
+      // Only curves still in use; curves are dropped once their last edge goes.
+      curves: [...this.curves]
+        .filter(([id]) => usedCurves.has(id))
+        .map(([id, c]) => [id, c.kind, c.center?.toArray() ?? null, c.normal?.toArray() ?? null, c.radius ?? null]),
       faces: [...this.faces.values()].map((f) => [
         f.id,
         f.outer.map((v) => v.id),
@@ -435,6 +493,7 @@ export class Mesh {
     this.vertices.clear();
     this.edges.clear();
     this.faces.clear();
+    this.curves.clear();
     this.grid.clear();
     for (const [id, x, y, z] of json.vertices) {
       const v = new Vertex(id, new Vec3(x, y, z));
@@ -446,11 +505,20 @@ export class Mesh {
       if (!v) throw new Error(`Missing vertex ${id}`);
       return v;
     };
-    for (const [id, a, b, flags] of json.edges) {
+    for (const [id, kind, center, normal, radius] of json.curves ?? []) {
+      this.curves.set(id, {
+        kind,
+        center: center ? new Vec3(center[0], center[1], center[2]) : undefined,
+        normal: normal ? new Vec3(normal[0], normal[1], normal[2]) : undefined,
+        radius: radius ?? undefined,
+      });
+    }
+    for (const [id, a, b, flags, curve] of json.edges) {
       const e = new Edge(id, vert(a), vert(b));
       e.soft = (flags & 1) !== 0;
       e.smooth = (flags & 2) !== 0;
       e.hidden = (flags & 4) !== 0;
+      e.curve = curve && this.curves.has(curve) ? curve : 0;
       this.edges.set(id, e);
       e.v0.edges.add(e);
       e.v1.edges.add(e);
