@@ -17,7 +17,7 @@ function setup(build: (mesh: Mesh) => void, view: 'top' | 'iso' = 'iso') {
   camera.lookAt(new THREE.Vector3(120, -150, 160), new THREE.Vector3(5, 5, 0));
   if (view === 'top') camera.setStandardView('top', false);
   camera.updateClipping(new THREE.Sphere(new THREE.Vector3(), 500));
-  const engine = new InferenceEngine(mesh, viewFromCamera(camera, () => ({ width: W, height: H })));
+  const engine = new InferenceEngine(() => ({ active: mesh }), viewFromCamera(camera, () => ({ width: W, height: H })));
 
   /** Query with the cursor over a world point, offset by some pixels. */
   const at = (p: Vec3, dx = 0, dy = 0, extra: Partial<InferenceQuery> = {}) => {
@@ -205,5 +205,27 @@ describe('InferenceEngine guides', () => {
     const r = at(new Vec3(15, 25, 0), -2, 2);
     expect(r.kind).toBe('intersection');
     expect(r.point.distanceTo(new Vec3(15, 25, 0))).toBeLessThan(1e-9);
+  });
+});
+
+describe('InferenceEngine in Top view', () => {
+  it('does not snap to the blue axis (pointing at the viewer) near the origin', () => {
+    const { at, camera } = setup(() => {}, 'top');
+    // Like the default grid view: looking down at the middle of the build plate, origin off-centre.
+    camera.lookAt(new THREE.Vector3(125, 125, 500), new THREE.Vector3(125, 125, 0));
+    camera.setStandardView('top', false);
+    camera.updateClipping(new THREE.Sphere(new THREE.Vector3(125, 125, 0), 300));
+    for (const [x, y] of [[8, 8], [3, 6], [15, 4]] as const) {
+      const r = at(new Vec3(x, y, 0));
+      expect(r.point.z).toBeCloseTo(0, 6);
+      expect(r.axis).not.toBe('z');
+    }
+  });
+
+  it('does not infer blue from a start point in Top view', () => {
+    const { at } = setup(() => {}, 'top');
+    const r = at(new Vec3(22, 21, 0), 0, 0, { from: new Vec3(20, 20, 0) });
+    expect(r.axis).not.toBe('z');
+    expect(r.point.z).toBeCloseTo(0, 6);
   });
 });

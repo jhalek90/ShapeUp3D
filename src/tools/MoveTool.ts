@@ -1,13 +1,14 @@
 import { TOL, type Vec3 } from '../core/math';
+import { Transform } from '../core/affine';
 import type { Mesh } from '../core/Mesh';
-import { copyGeometry, transformVertices, translation, verticesOf } from '../core/transform';
+import type { Model } from '../core/Model';
 import { AXIS_COLORS, type Inference } from '../inference/InferenceEngine';
 import { parseArray } from '../units/angle';
 import { formatLength, parseLength } from '../units/length';
 import type { Overlay } from '../viewport/Overlay';
 import { drawInference } from './drawInference';
 import { CtrlTap, InferenceLocks } from './locks';
-import { hoverTarget, resolveTargets, targetsAt, type Targets } from './targets';
+import { hoverTarget, targetsAt, transformTargets, type Targets } from './targets';
 import type { Tool, ToolContext, ToolPointerEvent } from './Tool';
 
 const DRAG_PX = 6;
@@ -128,11 +129,10 @@ export class MoveTool implements Tool {
         return;
       }
       this.ctx.model.undo();
-      this.ctx.model.transact('Copy', (m) => {
-        const { faces, edges } = resolveTargets(m, prev.targets);
+      this.ctx.model.transact('Copy', (m, model) => {
         for (let i = 1; i <= array.count; i++) {
           const k = array.mode === 'multiply' ? i : i / array.count;
-          copyGeometry(m, faces, edges, translation(prev.offset.scale(k)));
+          transformTargets(model, m, prev.targets, Transform.translation(prev.offset.scale(k)), true);
         }
       });
       return;
@@ -171,7 +171,7 @@ export class MoveTool implements Tool {
     });
     const offset = this.current.point.sub(start);
     const copy = this.copy;
-    this.ctx.model.showPreview((m) => apply(m, targets, offset, copy));
+    this.ctx.model.showPreview((m, model) => apply(model, m, targets, offset, copy));
     this.ctx.setMeasurement('Distance', formatLength(offset.length(), this.ctx.format));
   }
 
@@ -183,7 +183,7 @@ export class MoveTool implements Tool {
   }
 
   private run(targets: Targets, offset: Vec3, copy: boolean): void {
-    this.ctx.model.transact(copy ? 'Copy' : 'Move', (m) => apply(m, targets, offset, copy));
+    this.ctx.model.transact(copy ? 'Copy' : 'Move', (m, model) => apply(model, m, targets, offset, copy));
     this.previous = { targets, offset, copy };
     this.ctx.setMeasurement('Distance', formatLength(offset.length(), this.ctx.format));
   }
@@ -205,8 +205,6 @@ export class MoveTool implements Tool {
   }
 }
 
-function apply(m: Mesh, targets: Targets, offset: Vec3, copy: boolean): void {
-  const { faces, edges } = resolveTargets(m, targets);
-  if (copy) copyGeometry(m, faces, edges, translation(offset));
-  else transformVertices(m, verticesOf(faces, edges), translation(offset));
+function apply(model: Model, m: Mesh, targets: Targets, offset: Vec3, copy: boolean): void {
+  transformTargets(model, m, targets, Transform.translation(offset), copy);
 }

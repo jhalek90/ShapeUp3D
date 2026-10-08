@@ -102,7 +102,7 @@ export class OffsetTool implements Tool {
       this.ctx.highlight(face ? [face] : []);
       return;
     }
-    const face = this.ctx.model.mesh.faces.get(this.faceId);
+    const face = this.ctx.model.active.faces.get(this.faceId);
     if (!face) {
       this.reset();
       return;

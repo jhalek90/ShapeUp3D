@@ -17,6 +17,7 @@ export class GuideRenderer {
   private readonly group = new THREE.Group();
   private readonly material = new THREE.LineDashedMaterial({ color: GUIDE_COLOR, dashSize: 1, gapSize: 1, transparent: true, opacity: 0.85 });
   private lines: { line: THREE.Line; point: THREE.Vector3; dir: THREE.Vector3 }[] = [];
+  private points: { x: number; y: number; z: number }[] = [];
   private builtVersion = -1;
 
   constructor(
@@ -59,9 +60,7 @@ export class GuideRenderer {
 
   /** Guide points are drawn as small screen-space markers. */
   drawPoints(o: Overlay): void {
-    for (const g of this.model.mesh.guides.values()) {
-      if (g.kind === 'point') o.marker(g.point, 'cross', '#5a5f66');
-    }
+    for (const p of this.points) o.marker(p, 'cross', '#5a5f66');
   }
 
   private rebuild(): void {
@@ -69,15 +68,24 @@ export class GuideRenderer {
     for (const { line } of this.lines) line.geometry.dispose();
     this.group.clear();
     this.lines = [];
-    for (const g of this.model.mesh.guides.values()) {
-      if (g.kind !== 'line') continue;
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute('position', new THREE.Float32BufferAttribute(6, 3));
-      geometry.setAttribute('lineDistance', new THREE.Float32BufferAttribute(2, 1));
-      const line = new THREE.Line(geometry, this.material);
-      line.frustumCulled = false;
-      this.group.add(line);
-      this.lines.push({ line, point: new THREE.Vector3(g.point.x, g.point.y, g.point.z), dir: new THREE.Vector3(g.dir.x, g.dir.y, g.dir.z) });
-    }
+    this.points = [];
+    // Guides can live inside groups too; draw them all in world coordinates.
+    this.model.traverse((mesh, t) => {
+      for (const g of mesh.guides.values()) {
+        const p = t.apply(g.point);
+        if (g.kind === 'point') {
+          this.points.push(p);
+          continue;
+        }
+        const d = t.applyDir(g.dir).normalize();
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(6, 3));
+        geometry.setAttribute('lineDistance', new THREE.Float32BufferAttribute(2, 1));
+        const line = new THREE.Line(geometry, this.material);
+        line.frustumCulled = false;
+        this.group.add(line);
+        this.lines.push({ line, point: new THREE.Vector3(p.x, p.y, p.z), dir: new THREE.Vector3(d.x, d.y, d.z) });
+      }
+    });
   }
 }

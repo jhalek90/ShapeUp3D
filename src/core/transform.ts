@@ -141,10 +141,11 @@ export function foldFace(mesh: Mesh, f: Face): void {
 }
 
 /**
- * Copies faces and edges through `map` (a rigid transform). Copies weld to
- * whatever geometry they land on, like SketchUp's loose geometry.
+ * Copies faces and edges through `map` (a rigid transform), into the same mesh or
+ * into `target`. Copies weld to whatever geometry they land on, like SketchUp's
+ * loose geometry.
  */
-export function copyGeometry(mesh: Mesh, faces: Iterable<Face>, edges: Iterable<Edge>, map: PointMap): void {
+export function copyGeometry(mesh: Mesh, faces: Iterable<Face>, edges: Iterable<Edge>, map: PointMap, target: Mesh = mesh): void {
   const faceList = [...faces];
   const edgeSet = new Set(edges);
   for (const f of faceList) for (const e of mesh.faceEdges(f)) edgeSet.add(e);
@@ -156,7 +157,7 @@ export function copyGeometry(mesh: Mesh, faces: Iterable<Face>, edges: Iterable<
     let c = curveCopies.get(id);
     if (c === undefined) {
       const info = mesh.curves.get(id);
-      c = info ? mesh.addCurve(mapCurveInfo(info, map)) : 0;
+      c = info ? target.addCurve(mapCurveInfo(info, map)) : 0;
       curveCopies.set(id, c);
     }
     return c;
@@ -167,7 +168,7 @@ export function copyGeometry(mesh: Mesh, faces: Iterable<Face>, edges: Iterable<
   const dup = (v: Vertex) => {
     let c = copies.get(v);
     if (!c) {
-      c = mesh.addVertex(map(v.pos));
+      c = target.addVertex(map(v.pos));
       copies.set(v, c);
     }
     return c;
@@ -176,8 +177,8 @@ export function copyGeometry(mesh: Mesh, faces: Iterable<Face>, edges: Iterable<
     const a = dup(e.v0);
     const b = dup(e.v1);
     if (a === b) continue;
-    const existed = mesh.edgeBetween(a, b);
-    const ne = existed ?? mesh.addEdge(a, b);
+    const existed = target.edgeBetween(a, b);
+    const ne = existed ?? target.addEdge(a, b);
     ne.soft ||= e.soft;
     ne.smooth ||= e.smooth;
     ne.hidden ||= e.hidden;
@@ -186,10 +187,10 @@ export function copyGeometry(mesh: Mesh, faces: Iterable<Face>, edges: Iterable<
   for (const f of faceData) {
     const normal = map(f.anchor.add(f.normal)).sub(map(f.anchor)).normalize();
     try {
-      mesh.addFace(f.outer.map(dup), f.holes.map((h) => h.map(dup)), normal);
+      target.addFace(f.outer.map(dup), f.holes.map((h) => h.map(dup)), normal);
     } catch {
       // The copy collapsed (e.g. welded onto itself); skip it.
     }
   }
-  for (const v of copies.values()) mesh.pruneVertex(v);
+  for (const v of copies.values()) target.pruneVertex(v);
 }

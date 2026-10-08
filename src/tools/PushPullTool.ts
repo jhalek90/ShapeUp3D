@@ -79,7 +79,7 @@ export class PushPullTool implements Tool {
       normal: hit.face.normal,
       distance: 0,
       press: { x: e.x, y: e.y },
-      snaps: alignedFaceDistances(this.ctx.model.mesh, hit.face, hit.point),
+      snaps: alignedFaceDistances(this.ctx.model.active, hit.face, hit.point),
     };
     this.ctx.highlight();
     this.ctx.model.beginPreview();

@@ -15,6 +15,7 @@ export class EraserTool implements Tool {
   private ctx!: ToolContext;
   private marked: Set<number> | null = null;
   private markedGuides: Set<number> | null = null;
+  private markedInstances: Set<number> | null = null;
   private hover: Edge | null = null;
 
   activate(ctx: ToolContext): void {
@@ -30,6 +31,7 @@ export class EraserTool implements Tool {
   cancel(): void {
     this.marked = null;
     this.markedGuides = null;
+    this.markedInstances = null;
     this.ctx.highlight();
   }
 
@@ -37,6 +39,7 @@ export class EraserTool implements Tool {
     if (e.button !== 0) return;
     this.marked = new Set();
     this.markedGuides = new Set();
+    this.markedInstances = new Set();
     this.mark(e);
   }
 
@@ -46,12 +49,18 @@ export class EraserTool implements Tool {
 
   pointerUp(e: ToolPointerEvent): void {
     if (e.button !== 0 || !this.marked) return;
-    const mesh = this.ctx.model.mesh;
+    const mesh = this.ctx.model.active;
     const ids = [...this.marked];
     const guideIds = [...(this.markedGuides ?? [])];
+    const instanceIds = [...(this.markedInstances ?? [])];
     this.marked = null;
     this.markedGuides = null;
+    this.markedInstances = null;
     this.ctx.highlight();
+    if (instanceIds.length > 0 && ids.length === 0) {
+      this.ctx.model.transact('Erase', (m) => instanceIds.forEach((id) => m.instances.delete(id)));
+      return;
+    }
     if (guideIds.length > 0 && ids.length === 0) {
       this.ctx.model.transact('Erase Guides', (m) => guideIds.forEach((id) => m.guides.delete(id)));
       return;
@@ -76,11 +85,13 @@ export class EraserTool implements Tool {
     const q = { x: e.x, y: e.y, ray: this.ctx.viewport.ray(e.ndc) };
     const hit = this.ctx.inference.pick(q, 'edge');
     this.hover = hit?.edge ?? null;
+    const instance = hit?.instance !== undefined ? this.ctx.model.active.instances.get(hit.instance) : undefined;
+    if (instance && this.markedInstances) this.markedInstances.add(instance.id);
     // Guides can be erased too (edges take priority when both are under the cursor).
-    const guide = this.hover ? null : this.ctx.inference.pickGuide(q);
+    const guide = this.hover || instance ? null : this.ctx.inference.pickGuide(q);
     if (guide && this.markedGuides) this.markedGuides.add(guide.id);
     this.ctx.setCursor(guide ? 'pointer' : 'crosshair');
-    const mesh = this.ctx.model.mesh;
+    const mesh = this.ctx.model.active;
     // Erasing one segment of a curve erases the whole curve, as in SketchUp.
     const hovered = this.hover ? (this.hover.curve ? mesh.curveEdges(this.hover.curve) : [this.hover]) : [];
     if (this.marked) for (const e of hovered) this.marked.add(e.id);
@@ -90,6 +101,8 @@ export class EraserTool implements Tool {
       if (edge) shown.add(edge);
     }
     for (const e of hovered) shown.add(e);
-    this.ctx.highlight([], shown);
+    const insts = [...(this.markedInstances ?? [])].map((id) => mesh.instances.get(id)).filter((i) => !!i);
+    if (instance) insts.push(instance);
+    this.ctx.highlight([], shown, insts);
   }
 }

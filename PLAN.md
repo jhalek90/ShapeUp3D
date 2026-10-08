@@ -238,9 +238,22 @@ Measurements box wired to the parser. Deploy instructions.
   circles under uniform scale.
 - Shortcut change: Select None is Ctrl+Shift+A (browsers reserve Ctrl+T / Ctrl+N).
 
-### M6b — Groups & components
-- **Groups** and **Components** (edit context, isolation of geometry, instances
-  sharing a definition), outliner basics.
+### M6b — Groups & components ✅
+- Model = root mesh + definitions; groups/components are instances (affine
+  transform + definition). Groups are unique; component copies share their
+  definition (editing one updates all, live).
+- Make Group (Ctrl+G), Make Component (G), Explode, Close Group (Esc). Double-click
+  a group to edit it: its geometry moves into world coordinates while open, so all
+  tools work unchanged; everything outside is drawn faded. Clicking outside closes it.
+- Move/Rotate/Scale/Copy/arrays and Eraser/Delete work on groups as wholes; the
+  Select tool picks groups (blue bounding box), including in window/crossing boxes.
+- Snapping sees all geometry (everything outside the open group is copied into a
+  world-space snap mesh), so you can align to other groups.
+- File format v2 (definitions + instances); v1 files still open. Undo works across
+  entering/leaving groups. Saved files always have groups closed; unused
+  definitions are dropped.
+- Fix: axes pointing at the viewer (blue in Top view) no longer capture the cursor.
+- Not yet: outliner panel, component naming/browser, Make Unique, mirrored scales.
 
 ### M7 — STL import/export
 - As described above, including the watertight check.

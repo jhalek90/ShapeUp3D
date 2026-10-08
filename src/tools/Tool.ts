@@ -1,7 +1,7 @@
 import type * as THREE from 'three';
 import type { Selection } from '../app/Selection';
 import type { Vec3 } from '../core/math';
-import type { Edge, Face } from '../core/Mesh';
+import type { Edge, Face, Instance } from '../core/Mesh';
 import type { Model } from '../core/Model';
 import type { InferenceEngine } from '../inference/InferenceEngine';
 import type { LengthFormat } from '../units/length';
@@ -36,7 +36,7 @@ export interface ToolContext {
   readonly selection: Selection;
   readonly format: LengthFormat;
   /** Highlights geometry the tool is about to act on (pass nothing to clear). */
-  highlight(faces?: Iterable<Face>, edges?: Iterable<Edge>): void;
+  highlight(faces?: Iterable<Face>, edges?: Iterable<Edge>, instances?: Iterable<Instance>): void;
   /** Direction toward the viewer; new faces face this way when nothing else decides. */
   facing(): Vec3;
   /** Hint text in the status bar. */

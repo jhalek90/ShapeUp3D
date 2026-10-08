@@ -1,6 +1,7 @@
 import type { Entity } from '../app/Selection';
-import type { Vec3 } from '../core/math';
-import type { Edge, Face, Mesh } from '../core/Mesh';
+import { instanceBounds } from '../core/groups';
+import { Vec3 } from '../core/math';
+import type { Edge, Face, Instance, Mesh } from '../core/Mesh';
 import type { Overlay } from '../viewport/Overlay';
 import type { Tool, ToolContext, ToolPointerEvent } from './Tool';
 
@@ -10,8 +11,10 @@ type Mode = 'replace' | 'add' | 'toggle' | 'remove';
 
 /**
  * Select tool, as in SketchUp:
- * - click selects an edge or face; double-click adds its neighbours (face + its
- *   edges, or edge + its faces); triple-click selects everything connected;
+ * - click selects an edge, face, or group/component; double-click adds its
+ *   neighbours (face + its edges, or edge + its faces) or opens a group for
+ *   editing; triple-click selects everything connected;
+ * - clicking outside the group being edited closes it;
  * - drag left→right selects what's fully inside the box (window), right→left what
  *   the box touches (crossing);
  * - Ctrl adds, Shift toggles, Ctrl+Shift removes; clicking empty space clears.
@@ -27,7 +30,7 @@ export class SelectTool implements Tool {
 
   activate(ctx: ToolContext): void {
     this.ctx = ctx;
-    ctx.setStatus('Click or drag to select. Ctrl = add, Shift = toggle, Ctrl+Shift = remove. Delete erases.');
+    ctx.setStatus('Click or drag to select. Double-click a group to edit it. Ctrl = add, Shift = toggle. Delete erases.');
   }
 
   cancel(): void {
@@ -36,10 +39,11 @@ export class SelectTool implements Tool {
   }
 
   keyDown(e: KeyboardEvent): boolean {
-    // Esc abandons a drag, or else clears the selection. (Switching tools keeps it.)
+    // Esc abandons a drag, else clears the selection, else closes the open group.
     if (e.key !== 'Escape') return false;
     if (this.press || this.box) this.cancel();
-    else this.ctx.selection.clear();
+    else if (!this.ctx.selection.isEmpty) this.ctx.selection.clear();
+    else this.ctx.model.exit();
     return true;
   }
 
@@ -80,12 +84,32 @@ export class SelectTool implements Tool {
   private clickSelect(e: ToolPointerEvent, extent: 'single' | 'neighbours' | 'connected'): void {
     const hit = this.ctx.inference.pick({ x: e.x, y: e.y, ray: this.ctx.viewport.ray(e.ndc) });
     const m = mode(e);
-    if (!hit) {
+    const model = this.ctx.model;
+    const mesh = model.active;
+
+    // Clicking empty space or anything outside the open group closes the group.
+    if (!hit || hit.outside) {
+      if (model.editPath.length > 0 && m === 'replace') {
+        model.exit();
+        return;
+      }
       if (m === 'replace') this.ctx.selection.clear();
       return;
     }
-    const entity: Entity = (hit.edge ?? hit.face)!;
-    const mesh = this.ctx.model.mesh;
+
+    if (hit.instance !== undefined) {
+      const inst = mesh.instances.get(hit.instance);
+      if (!inst) return;
+      if (extent !== 'single') {
+        // Double-click a group/component: open it for editing.
+        model.enter(inst.id);
+        return;
+      }
+      apply(this.ctx, m, [inst]);
+      return;
+    }
+
+    const entity: Face | Edge = (hit.edge ?? hit.face)!;
     // An edge of a circle or arc stands for the whole curve.
     const base: Entity[] = hit.edge?.curve ? mesh.curveEdges(hit.edge.curve) : [entity];
     const entities =
@@ -98,7 +122,7 @@ export class SelectTool implements Tool {
     const crossing = b.x1 < b.x0;
     const r = { x0: Math.min(b.x0, b.x1), y0: Math.min(b.y0, b.y1), x1: Math.max(b.x0, b.x1), y1: Math.max(b.y0, b.y1) };
     const screen = (p: Vec3) => this.ctx.inference.screen(p);
-    const mesh = this.ctx.model.mesh;
+    const mesh = this.ctx.model.active;
     const picked: Entity[] = [];
     for (const e of mesh.edges.values()) {
       if (e.hidden) continue;
@@ -111,11 +135,16 @@ export class SelectTool implements Tool {
       const pts = f.outer.map((v) => screen(v.pos));
       if (pts.some((p) => !p)) continue;
       const poly = pts as { x: number; y: number }[];
-      const touches = () =>
-        poly.some((p) => inRect(p, r)) ||
-        poly.some((p, i) => segmentTouchesRect(p, poly[(i + 1) % poly.length]!, r)) ||
-        pointInPoly({ x: (r.x0 + r.x1) / 2, y: (r.y0 + r.y1) / 2 }, poly);
-      if (crossing ? touches() : poly.every((p) => inRect(p, r))) picked.push(f);
+      if (crossing ? touchesPolygon(poly, r) : poly.every((p) => inRect(p, r))) picked.push(f);
+    }
+    // Groups/components by their bounding box corners.
+    for (const inst of mesh.instances.values()) {
+      const bb = instanceBounds(this.ctx.model, inst);
+      if (!bb) continue;
+      const corners = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => screen(new Vec3(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z)));
+      if (corners.some((p) => !p)) continue;
+      const pts = corners as { x: number; y: number }[];
+      if (crossing ? touchesPolygon(hull(pts), r) : pts.every((p) => inRect(p, r))) picked.push(inst);
     }
     if (picked.length === 0 && m === 'replace') this.ctx.selection.clear();
     else apply(this.ctx, m, picked);
@@ -140,14 +169,15 @@ function apply(ctx: ToolContext, m: Mode, entities: Entity[]): void {
 /** Double-click: a face with its edges, or an edge with its faces. */
 function neighbours(mesh: Mesh, entity: Entity): Entity[] {
   if ('outer' in entity) return [entity, ...mesh.faceEdges(entity)];
-  return [entity, ...entity.faces];
+  if ('v0' in entity) return [entity, ...entity.faces];
+  return [entity as Instance];
 }
 
 /**
  * Triple-click: everything connected to the entity, through shared vertices or
  * through faces (a face links its outline to the loops of its holes).
  */
-export function connected(mesh: Mesh, entity: Entity): Entity[] {
+export function connected(mesh: Mesh, entity: Face | Edge): Entity[] {
   const edges = new Set<Edge>();
   const faces = new Set<Face>();
   const stack = 'outer' in entity ? mesh.faceEdges(entity) : [entity];
@@ -170,6 +200,14 @@ type R = { x0: number; y0: number; x1: number; y1: number };
 
 function inRect(p: P, r: R): boolean {
   return p.x >= r.x0 && p.x <= r.x1 && p.y >= r.y0 && p.y <= r.y1;
+}
+
+function touchesPolygon(poly: P[], r: R): boolean {
+  return (
+    poly.some((p) => inRect(p, r)) ||
+    poly.some((p, i) => segmentTouchesRect(p, poly[(i + 1) % poly.length]!, r)) ||
+    pointInPoly({ x: (r.x0 + r.x1) / 2, y: (r.y0 + r.y1) / 2 }, poly)
+  );
 }
 
 function segmentTouchesRect(a: P, b: P, r: R): boolean {
@@ -200,4 +238,21 @@ function pointInPoly(p: P, poly: P[]): boolean {
     if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
   }
   return inside;
+}
+
+/** Convex hull of screen points (for a group's projected box). */
+function hull(points: P[]): P[] {
+  const pts = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+  const cross = (o: P, a: P, b: P) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower: P[] = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2]!, lower[lower.length - 1]!, p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper: P[] = [];
+  for (const p of [...pts].reverse()) {
+    while (upper.length >= 2 && cross(upper[upper.length - 2]!, upper[upper.length - 1]!, p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
 }

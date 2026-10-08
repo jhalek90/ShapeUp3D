@@ -1,12 +1,14 @@
 import { TOL, Vec3 } from '../core/math';
-import { scaling, transformVertices, verticesOf } from '../core/transform';
+import { Transform } from '../core/affine';
+import { instanceBounds } from '../core/groups';
+import { verticesOf } from '../core/transform';
 import type { Inference } from '../inference/InferenceEngine';
 import { formatLength, parseLengthList } from '../units/length';
 import type { Overlay } from '../viewport/Overlay';
 import { drawInference } from './drawInference';
 import { CtrlTap } from './locks';
 import { connected } from './SelectTool';
-import { resolveTargets, type Targets } from './targets';
+import { resolveTargets, transformTargets, type Targets } from './targets';
 import type { Tool, ToolContext, ToolPointerEvent } from './Tool';
 
 const GRIP_PX = 10;
@@ -65,7 +67,8 @@ export class ScaleTool implements Tool {
       return;
     }
     // Keep up with selection / model changes (undo, selecting with the mouse).
-    if (this.ctx.selection.size !== (this.targets ? this.targets.faceIds.length + this.targets.edgeIds.length : 0)) this.loadSelection();
+    const t = this.targets;
+    if (this.ctx.selection.size !== (t ? t.faceIds.length + t.edgeIds.length + t.instanceIds.length : 0)) this.loadSelection();
     else if (this.targets) this.box = this.computeBox();
     this.hover = this.gripAt(e);
   }
@@ -81,7 +84,9 @@ export class ScaleTool implements Tool {
       // Nothing selected: select the object under the cursor.
       const hit = this.ctx.inference.pick({ x: e.x, y: e.y, ray: this.ctx.viewport.ray(e.ndc) });
       const entity = hit?.face ?? hit?.edge;
-      if (entity) this.ctx.selection.set(connected(this.ctx.model.mesh, entity));
+      const inst = hit?.instance !== undefined ? this.ctx.model.active.instances.get(hit.instance) : undefined;
+      if (entity) this.ctx.selection.set(connected(this.ctx.model.active, entity));
+      else if (inst) this.ctx.selection.set([inst]);
       this.loadSelection();
       return;
     }
@@ -183,19 +188,23 @@ export class ScaleTool implements Tool {
       this.ctx.setStatus('Click an object to scale it (or select first).');
       return;
     }
-    this.targets = { faceIds: sel.faces.map((f) => f.id), edgeIds: sel.edges.map((e) => e.id) };
+    this.targets = { faceIds: sel.faces.map((f) => f.id), edgeIds: sel.edges.map((e) => e.id), instanceIds: sel.instances.map((i) => i.id) };
     this.box = this.computeBox();
     this.ctx.setStatus('Drag a grip to scale. Corners: uniform; edges: two directions; face centers: one.');
     this.ctx.setMeasurement('Scale', '');
   }
 
   private computeBox(): Box | null {
-    const { faces, edges } = resolveTargets(this.ctx.model.mesh, this.targets!);
-    const verts = [...verticesOf(faces, edges)];
-    if (verts.length === 0) return null;
-    const xs = verts.map((v) => v.pos.x);
-    const ys = verts.map((v) => v.pos.y);
-    const zs = verts.map((v) => v.pos.z);
+    const { faces, edges, instances } = resolveTargets(this.ctx.model.active, this.targets!);
+    const pts = [...verticesOf(faces, edges)].map((v) => v.pos);
+    for (const inst of instances) {
+      const b = instanceBounds(this.ctx.model, inst);
+      if (b) pts.push(b.min, b.max);
+    }
+    if (pts.length === 0) return null;
+    const xs = pts.map((p) => p.x);
+    const ys = pts.map((p) => p.y);
+    const zs = pts.map((p) => p.z);
     return { min: new Vec3(Math.min(...xs), Math.min(...ys), Math.min(...zs)), max: new Vec3(Math.max(...xs), Math.max(...ys), Math.max(...zs)) };
   }
 
@@ -268,10 +277,7 @@ export class ScaleTool implements Tool {
     drag.factor = factor;
     const factors = this.factorsFor(drag.grip, factor);
     const { targets } = this;
-    this.ctx.model.showPreview((m) => {
-      const { faces, edges } = resolveTargets(m, targets!);
-      transformVertices(m, verticesOf(faces, edges), scaling(anchor, factors));
-    });
+    this.ctx.model.showPreview((m, model) => transformTargets(model, m, targets!, Transform.scaling(anchor, factors), false));
     this.ctx.setMeasurement('Scale', factor.toFixed(2));
   }
 
@@ -291,10 +297,7 @@ export class ScaleTool implements Tool {
     this.ctx.model.endPreview();
     this.drag = null;
     if (Math.abs(factors.x - 1) > 1e-9 || Math.abs(factors.y - 1) > 1e-9 || Math.abs(factors.z - 1) > 1e-9) {
-      this.ctx.model.transact('Scale', (m) => {
-        const { faces, edges } = resolveTargets(m, targets);
-        transformVertices(m, verticesOf(faces, edges), scaling(anchor, factors));
-      });
+      this.ctx.model.transact('Scale', (m, model) => transformTargets(model, m, targets, Transform.scaling(anchor, factors), false));
     }
     this.loadSelection();
     const box = this.box;

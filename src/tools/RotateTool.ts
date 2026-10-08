@@ -1,13 +1,15 @@
 import * as THREE from 'three';
 import { Plane, TOL, Vec3 } from '../core/math';
+import { Transform } from '../core/affine';
 import type { Mesh } from '../core/Mesh';
-import { copyGeometry, rotation, transformVertices, verticesOf } from '../core/transform';
+import type { Model } from '../core/Model';
+import { rotation } from '../core/transform';
 import { AXIS_COLORS, AXIS_DIRS, type Axis, type Inference } from '../inference/InferenceEngine';
 import { formatAngle, parseAngle, parseArray } from '../units/angle';
 import type { Overlay } from '../viewport/Overlay';
 import { drawInference } from './drawInference';
 import { AXIS_NAMES, CtrlTap } from './locks';
-import { hoverTarget, resolveTargets, targetsAt, type Targets } from './targets';
+import { hoverTarget, targetsAt, transformTargets, type Targets } from './targets';
 import type { Tool, ToolContext, ToolPointerEvent } from './Tool';
 
 const ARROW_AXES: Partial<Record<string, Axis>> = { ArrowRight: 'x', ArrowLeft: 'y', ArrowUp: 'z' };
@@ -128,11 +130,10 @@ export class RotateTool implements Tool {
         return;
       }
       this.ctx.model.undo();
-      this.ctx.model.transact('Copy', (m) => {
-        const { faces, edges } = resolveTargets(m, prev.targets);
+      this.ctx.model.transact('Copy', (m, model) => {
         for (let i = 1; i <= array.count; i++) {
           const k = array.mode === 'multiply' ? i : i / array.count;
-          copyGeometry(m, faces, edges, rotation(prev.center, prev.axis, prev.angle * k));
+          transformTargets(model, m, prev.targets, Transform.rotation(prev.center, prev.axis, prev.angle * k), true);
         }
       });
       return;
@@ -192,7 +193,7 @@ export class RotateTool implements Tool {
     if (Math.abs(angle - snapped) < SNAP_RANGE) angle = snapped;
     this.angle = angle;
     const { targets, axis, copy } = this;
-    this.ctx.model.showPreview((m) => apply(m, targets!, center, axis, angle, copy));
+    this.ctx.model.showPreview((m, model) => apply(model, m, targets!, center, axis, angle, copy));
     this.ctx.setMeasurement('Angle', formatAngle(angle));
   }
 
@@ -216,7 +217,7 @@ export class RotateTool implements Tool {
   }
 
   private run(targets: Targets, center: Vec3, axis: Vec3, angle: number, copy: boolean): void {
-    this.ctx.model.transact(copy ? 'Copy' : 'Rotate', (m) => apply(m, targets, center, axis, angle, copy));
+    this.ctx.model.transact(copy ? 'Copy' : 'Rotate', (m, model) => apply(model, m, targets, center, axis, angle, copy));
     this.previous = { targets, center, axis, angle, copy };
     this.ctx.setMeasurement('Angle', formatAngle(angle));
   }
@@ -232,9 +233,6 @@ export class RotateTool implements Tool {
   }
 }
 
-function apply(m: Mesh, targets: Targets, center: Vec3, axis: Vec3, angle: number, copy: boolean): void {
-  const { faces, edges } = resolveTargets(m, targets);
-  const map = rotation(center, axis, angle);
-  if (copy) copyGeometry(m, faces, edges, map);
-  else transformVertices(m, verticesOf(faces, edges), map);
+function apply(model: Model, m: Mesh, targets: Targets, center: Vec3, axis: Vec3, angle: number, copy: boolean): void {
+  transformTargets(model, m, targets, Transform.rotation(center, axis, angle), copy);
 }

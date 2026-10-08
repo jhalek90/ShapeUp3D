@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { closestLineParam, closestPointOnSegment, closestSegmentSegment, Plane, TOL, Vec3, type XYZ } from '../core/math';
 import { faceContainsPoint, type Edge, type Face, type Guide, type Mesh, type Vertex } from '../core/Mesh';
+import type { ForeignGeometry } from '../core/scene';
 import type { CameraController } from '../viewport/CameraController';
 
 // Inference ("snapping"): turns a cursor position into a meaningful 3D point.
@@ -114,10 +115,26 @@ export function viewFromCamera(camera: CameraController, size: () => { width: nu
 }
 
 export class InferenceEngine {
+  /**
+   * @param sources the mesh being edited, and (optionally) everything else in
+   *   world coordinates — snapped to, but not edited (see core/scene.ts).
+   */
   constructor(
-    private readonly mesh: Mesh,
+    private readonly sources: () => { active: Mesh; foreign?: ForeignGeometry },
     private readonly view: InferenceView,
   ) {}
+
+  /** Meshes to snap to: the active one first. */
+  private meshes(): Mesh[] {
+    const { active, foreign } = this.sources();
+    return foreign ? [active, foreign.mesh] : [active];
+  }
+
+  /** True if a face/edge belongs to the mesh being edited (so tools may change it). */
+  isActive(entity: Face | Edge): boolean {
+    const m = this.sources().active;
+    return 'outer' in entity ? m.faces.get(entity.id) === entity : m.edges.get(entity.id) === entity;
+  }
 
   infer(q: InferenceQuery): Inference {
     const origin = Vec3.from(q.ray.origin);
@@ -150,17 +167,23 @@ export class InferenceEngine {
    * The edge or face under the cursor, for selecting. Edges win when within a few
    * pixels; hidden geometry is ignored. `point` is where the cursor ray meets it.
    */
-  pick(q: Pick<InferenceQuery, 'x' | 'y' | 'ray'>, only?: 'edge' | 'face'): { edge?: Edge; face?: Face; point: Vec3 } | null {
+  pick(q: Pick<InferenceQuery, 'x' | 'y' | 'ray'>, only?: 'edge' | 'face'): PickResult | null {
     const origin = Vec3.from(q.ray.origin);
     const dir = Vec3.from(q.ray.direction).normalize();
     this.cursorRay = { origin, dir };
     const faceHit = this.raycastFaces(origin, dir);
+    let hit: { edge?: Edge; face?: Face; point: Vec3 } | null = null;
     if (only !== 'face') {
       const edge = this.nearestEdge({ x: q.x, y: q.y }, origin, dir, notBehind(faceHit?.face, dir));
-      if (edge?.edge) return { edge: edge.edge, point: edge.point };
+      if (edge?.edge) hit = { edge: edge.edge, point: edge.point };
     }
-    if (faceHit && only !== 'edge') return { face: faceHit.face, point: faceHit.point };
-    return null;
+    if (!hit && faceHit && only !== 'edge') hit = { face: faceHit.face, point: faceHit.point };
+    if (!hit) return null;
+    const entity = (hit.edge ?? hit.face)!;
+    if (this.isActive(entity)) return hit;
+    // Foreign geometry: a group/component in the active mesh, or something outside the open group.
+    const instance = this.sources().foreign?.owner.get(entity);
+    return instance !== undefined ? { instance, point: hit.point } : { outside: true, point: hit.point };
   }
 
   /** Screen position (viewport pixels) of a world point, or null if behind the camera. */
@@ -190,21 +213,23 @@ export class InferenceEngine {
         best = make();
       }
     };
-    for (const v of this.mesh.vertices.values()) {
-      if (![...v.edges].some(isVisibleEdge)) continue;
-      consider(v.pos, () => ({ point: v.pos, kind: 'endpoint', tooltip: 'Endpoint', vertex: v }));
-    }
-    for (const e of this.mesh.edges.values()) {
-      if (!isVisibleEdge(e)) continue;
-      const m = e.midpoint;
-      consider(m, () => ({ point: m, kind: 'midpoint', tooltip: 'Midpoint', edge: e }));
-    }
-    for (const c of this.mesh.curves.values()) {
-      const center = c.center;
-      if (center) consider(center, () => ({ point: center, kind: 'center', tooltip: 'Center' }));
-    }
-    for (const g of this.mesh.guides.values()) {
-      if (g.kind === 'point') consider(g.point, () => ({ point: g.point, kind: 'guide-point', tooltip: 'Guide Point', guide: g }));
+    for (const mesh of this.meshes()) {
+      for (const v of mesh.vertices.values()) {
+        if (![...v.edges].some(isVisibleEdge)) continue;
+        consider(v.pos, () => ({ point: v.pos, kind: 'endpoint', tooltip: 'Endpoint', vertex: v }));
+      }
+      for (const e of mesh.edges.values()) {
+        if (!isVisibleEdge(e)) continue;
+        const m = e.midpoint;
+        consider(m, () => ({ point: m, kind: 'midpoint', tooltip: 'Midpoint', edge: e }));
+      }
+      for (const c of mesh.curves.values()) {
+        const center = c.center;
+        if (center) consider(center, () => ({ point: center, kind: 'center', tooltip: 'Center' }));
+      }
+      for (const g of mesh.guides.values()) {
+        if (g.kind === 'point') consider(g.point, () => ({ point: g.point, kind: 'guide-point', tooltip: 'Guide Point', guide: g }));
+      }
     }
     consider(Vec3.ZERO, () => ({ point: Vec3.ZERO, kind: 'origin', tooltip: 'Origin' }));
     this.intersections(cursor, consider);
@@ -234,8 +259,9 @@ export class InferenceEngine {
       }
     }
     // Edges and guides passing through faces.
+    const faces = this.meshes().flatMap((m) => [...m.faces.values()]);
     for (const l of near) {
-      for (const f of this.mesh.faces.values()) {
+      for (const f of faces) {
         const plane = f.plane;
         const denom = plane.normal.dot(l.dir);
         if (Math.abs(denom) < 1e-12) continue;
@@ -250,11 +276,13 @@ export class InferenceEngine {
   /** Visible edges (segments) and guide lines (infinite), for line snapping. */
   private linears(): Linear[] {
     const out: Linear[] = [];
-    for (const e of this.mesh.edges.values()) {
-      if (isVisibleEdge(e)) out.push({ a: e.v0.pos, dir: e.v1.pos.sub(e.v0.pos), segment: true, edge: e });
-    }
-    for (const g of this.mesh.guides.values()) {
-      if (g.kind === 'line') out.push({ a: g.point, dir: g.dir, segment: false, guide: g });
+    for (const mesh of this.meshes()) {
+      for (const e of mesh.edges.values()) {
+        if (isVisibleEdge(e)) out.push({ a: e.v0.pos, dir: e.v1.pos.sub(e.v0.pos), segment: true, edge: e });
+      }
+      for (const g of mesh.guides.values()) {
+        if (g.kind === 'line') out.push({ a: g.point, dir: g.dir, segment: false, guide: g });
+      }
     }
     return out;
   }
@@ -311,7 +339,7 @@ export class InferenceEngine {
     const cursor = { x: q.x, y: q.y };
     let best: Guide | null = null;
     let bestDist = EDGE_PX;
-    for (const g of this.mesh.guides.values()) {
+    for (const g of this.sources().active.guides.values()) {
       let d: number | null;
       if (g.kind === 'point') {
         const s = this.view.project(g.point);
@@ -331,6 +359,7 @@ export class InferenceEngine {
     let best: Inference | null = null;
     let bestDist = AXIS_PX;
     for (const axis of ['x', 'y', 'z'] as const) {
+      if (this.facesViewer(axis)) continue;
       const p = pointOnLineNearRay(from, AXIS_DIRS[axis], origin, dir);
       if (!p || p.distanceTo(from) <= TOL || !visible(p)) continue;
       const s = this.view.project(p);
@@ -344,10 +373,20 @@ export class InferenceEngine {
     return best;
   }
 
+  /**
+   * An axis pointing (nearly) straight at the viewer, like blue in Top view, shows
+   * on screen as a short foreshortened stub; snapping to it would pull the cursor far
+   * above or below the drawing plane. Skip it (arrow keys can still lock it).
+   */
+  private facesViewer(axis: Axis): boolean {
+    return Math.abs(AXIS_DIRS[axis].dot(this.view.forward)) > 0.95;
+  }
+
   private onWorldAxis(cursor: { x: number; y: number }, origin: Vec3, dir: Vec3): Inference | null {
     let best: Inference | null = null;
     let bestDist = EDGE_PX;
     for (const axis of ['x', 'y', 'z'] as const) {
+      if (this.facesViewer(axis)) continue;
       const p = pointOnLineNearRay(Vec3.ZERO, AXIS_DIRS[axis], origin, dir);
       if (!p) continue;
       const s = this.view.project(p);
@@ -427,7 +466,7 @@ export class InferenceEngine {
   /** Nearest face hit by the ray. */
   private raycastFaces(origin: Vec3, dir: Vec3): { face: Face; point: Vec3; t: number } | null {
     let best: { face: Face; point: Vec3; t: number } | null = null;
-    for (const face of this.mesh.faces.values()) {
+    for (const face of this.meshes().flatMap((m) => [...m.faces.values()])) {
       const t = face.plane.intersectRay(origin, dir);
       if (t === null || (this.view.perspective && t <= 0) || (best && t >= best.t)) continue;
       const p = origin.addScaled(dir, t);
@@ -458,6 +497,18 @@ function notBehind(face: Face | undefined, rayDir: Vec3): (p: Vec3) => boolean {
 function pointOnLineNearRay(a: Vec3, dir: Vec3, origin: Vec3, rayDir: Vec3): Vec3 | null {
   const s = closestLineParam(a, dir, origin, rayDir);
   return s === null ? null : a.addScaled(dir, s);
+}
+
+/**
+ * What's under the cursor: an edge or face of the mesh being edited, a group or
+ * component in it (by instance id), or something outside the group being edited.
+ */
+export interface PickResult {
+  edge?: Edge;
+  face?: Face;
+  instance?: number;
+  outside?: true;
+  point: Vec3;
 }
 
 /** An edge (segment from a to a + dir) or a guide line (infinite through a along dir). */

@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import { Vec3 } from '../core/math';
 import { Model } from '../core/Model';
+import { explode, makeGroup } from '../core/groups';
 import { eraseEdges, eraseFaces } from '../core/ops';
+import { buildForeignGeometry, type ForeignGeometry } from '../core/scene';
 import { InferenceEngine, viewFromCamera } from '../inference/InferenceEngine';
 import { ArcTool } from '../tools/ArcTool';
 import { CircleTool } from '../tools/CircleTool';
@@ -56,7 +58,7 @@ export class App {
       renderer.update();
       guides.update();
     });
-    this.selection.onChange(() => renderer.setHighlight('selection', this.selection.faces, this.selection.edges));
+    this.selection.onChange(() => renderer.setHighlight('selection', this.selection.faces, this.selection.edges, this.selection.instances));
     const overlay = new Overlay(byId('viewport'), this.camera);
     this.viewport.afterRender.push(() => {
       overlay.begin();
@@ -68,10 +70,10 @@ export class App {
       model: this.model,
       viewport: this.viewport,
       camera: this.camera,
-      inference: new InferenceEngine(this.model.mesh, viewFromCamera(this.camera, () => this.viewport.size)),
+      inference: new InferenceEngine(() => this.snapSources(), viewFromCamera(this.camera, () => this.viewport.size)),
       selection: this.selection,
       format: this.format,
-      highlight: (faces = [], edges = []) => renderer.setHighlight('hover', faces, edges),
+      highlight: (faces = [], edges = [], instances = []) => renderer.setHighlight('hover', faces, edges, instances),
       facing: () => Vec3.from(this.camera.forward).negate(),
       setStatus: (text) => this.statusBar.setHint(text),
       setMeasurement: (label, value) => this.statusBar.setMeasurement(label, value),
@@ -115,6 +117,8 @@ export class App {
       S: () => this.tools.activate('scale'),
       T: () => this.tools.activate('tape'),
       Delete: () => this.eraseSelection(),
+      G: () => this.makeGroup('component'),
+      'Ctrl+G': () => this.makeGroup('group'),
       'Ctrl+A': () => this.selectAll(),
       // (Browsers reserve Ctrl+T / Ctrl+N, so these differ from SketchUp.)
       'Ctrl+Shift+A': () => this.selection.clear(),
@@ -149,18 +153,71 @@ export class App {
       if (!isEditable(e.target)) this.tools.keyUp(e);
     });
 
+    // Say which group is open, if any.
+    let context = '';
+    this.model.onChange(() => {
+      const path = this.model.editPath.join('/');
+      if (path === context) return;
+      context = path;
+      const def = this.model.activeDefinition;
+      this.statusBar.setHint(def ? `Editing ${def.name}. Click outside it or press Esc to close.` : 'Closed the group.');
+    });
+
     this.tools.activate('select');
     void this.document.restore();
   }
 
+  private foreign: ForeignGeometry | undefined;
+  private foreignVersion = -1;
+
+  /** What snapping sees: the mesh being edited, and everything else in world coordinates. */
+  private snapSources(): { active: import('../core/Mesh').Mesh; foreign?: ForeignGeometry } {
+    // Rebuilt when the model changes; live previews only change the active mesh, so keep it then.
+    if (!this.model.previewing && this.foreignVersion !== this.model.version) {
+      this.foreign = buildForeignGeometry(this.model);
+      this.foreignVersion = this.model.version;
+    }
+    return { active: this.model.active, foreign: this.foreign };
+  }
+
+  makeGroup(kind: 'group' | 'component'): void {
+    const { faces, edges, instances } = this.selection;
+    if (faces.length + edges.length + instances.length === 0) {
+      this.statusBar.setHint(`Select something first to make a ${kind}.`);
+      return;
+    }
+    this.tools.cancel();
+    const inst = this.model.transact(kind === 'group' ? 'Make Group' : 'Make Component', (m, model) => makeGroup(model, m, faces, edges, instances, kind));
+    if (inst) this.selection.set([inst]);
+  }
+
+  explodeSelection(): void {
+    const instances = this.selection.instances;
+    if (instances.length === 0) {
+      this.statusBar.setHint('Select a group or component to explode.');
+      return;
+    }
+    this.tools.cancel();
+    this.model.transact('Explode', (m, model) => {
+      for (const inst of instances) explode(model, m, inst);
+    });
+    this.selection.clear();
+  }
+
   zoomExtents(): void {
-    // Measure the model itself (the rendered copy may be a frame behind).
-    const verts = [...this.model.mesh.vertices.values()];
-    if (verts.length === 0) {
+    // Measure the model itself (the rendered copy may be a frame behind), groups included.
+    const pts: THREE.Vector3[] = [];
+    this.model.traverse((mesh, t) => {
+      for (const v of mesh.vertices.values()) {
+        const p = t.apply(v.pos);
+        pts.push(new THREE.Vector3(p.x, p.y, p.z));
+      }
+    });
+    if (pts.length === 0) {
       this.camera.zoomExtents(this.viewport.extentsSphere());
       return;
     }
-    const box = new THREE.Box3().setFromPoints(verts.map((v) => new THREE.Vector3(v.pos.x, v.pos.y, v.pos.z)));
+    const box = new THREE.Box3().setFromPoints(pts);
     this.camera.zoomExtents(box.getBoundingSphere(new THREE.Sphere()));
   }
 
@@ -170,23 +227,26 @@ export class App {
 
   eraseSelection(): void {
     if (this.selection.isEmpty) return;
-    const { faces, edges } = this.selection;
+    const { faces, edges, instances } = this.selection;
     this.tools.cancel();
     this.model.transact('Erase', (m) => {
       eraseFaces(m, faces);
       eraseEdges(m, edges);
+      for (const inst of instances) m.instances.delete(inst.id);
     });
     this.selection.clear();
   }
 
   deleteGuides(): void {
-    if (this.model.mesh.guides.size === 0) return;
-    this.model.transact('Delete Guides', (m) => m.guides.clear());
+    this.model.transact('Delete Guides', (_m, model) => {
+      model.mesh.guides.clear();
+      for (const d of model.definitions.values()) d.mesh.guides.clear();
+    });
   }
 
   selectAll(): void {
-    const m = this.model.mesh;
-    this.selection.set([...m.faces.values(), ...[...m.edges.values()].filter((e) => !e.hidden)]);
+    const m = this.model.active;
+    this.selection.set([...m.faces.values(), ...[...m.edges.values()].filter((e) => !e.hidden), ...m.instances.values()]);
   }
 
   undo(): void {
@@ -237,6 +297,11 @@ export class App {
         { label: 'Select None', shortcut: 'Ctrl+Shift+A', run: () => this.selection.clear() },
         { separator: true },
         { label: 'Delete Guides', run: () => this.deleteGuides() },
+        { separator: true },
+        { label: 'Make Group', shortcut: 'Ctrl+G', run: () => this.makeGroup('group') },
+        { label: 'Make Component', shortcut: 'G', run: () => this.makeGroup('component') },
+        { label: 'Explode', run: () => this.explodeSelection() },
+        { label: 'Close Group', shortcut: 'Esc', run: () => this.model.exit() },
       ],
       'left',
     );

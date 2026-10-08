@@ -1,3 +1,4 @@
+import { Transform } from './affine';
 import { newellNormal, Plane, PlaneProjector, pointInPolygon2D, TOL, Vec3, type XYZ } from './math';
 
 // The edge/face model. See PLAN.md "Geometry data model".
@@ -31,6 +32,16 @@ export interface CurveInfo {
  * points that snapping can use but that aren't geometry (never part of faces/STL).
  */
 export type Guide = { id: number; kind: 'line'; point: Vec3; dir: Vec3 } | { id: number; kind: 'point'; point: Vec3 };
+
+/**
+ * A placed group or component: an instance of a definition (which holds its own
+ * geometry), positioned by `transform` (definition coordinates → this mesh's).
+ */
+export interface Instance {
+  id: number;
+  definition: number;
+  transform: Transform;
+}
 
 /** Curves whose extrusions read as smooth surfaces (polygons stay faceted). */
 export function isSmoothCurve(kind: CurveKind | undefined): boolean {
@@ -124,6 +135,8 @@ export interface MeshJSON {
   curves?: [number, CurveKind, number[] | null, number[] | null, number | null][];
   /** [id, point, direction or null (a guide point)] */
   guides?: [number, number[], number[] | null][];
+  /** [id, definition id, transform (12 numbers)] */
+  instances?: [number, number, number[]][];
 }
 
 /** Copies an edge's display flags and curve onto another edge. */
@@ -143,6 +156,7 @@ export class Mesh {
   readonly faces = new Map<number, Face>();
   readonly curves = new Map<number, CurveInfo>();
   readonly guides = new Map<number, Guide>();
+  readonly instances = new Map<number, Instance>();
 
   private nextId = 1;
   private readonly grid = new Map<string, Vertex[]>();
@@ -368,6 +382,44 @@ export class Mesh {
     this.removeVertex(v);
   }
 
+  // ---- Instances -----------------------------------------------------------
+
+  addInstance(definition: number, transform: Transform = Transform.IDENTITY): Instance {
+    const inst: Instance = { id: this.nextId++, definition, transform };
+    this.instances.set(inst.id, inst);
+    return inst;
+  }
+
+  /**
+   * Moves everything in this mesh through an affine transform (used to switch a
+   * group's geometry between its own coordinates and world coordinates while it's
+   * being edited). Mirroring transforms are not supported.
+   */
+  applyTransform(t: Transform): void {
+    if (t.isIdentity()) return;
+    this.grid.clear();
+    for (const v of this.vertices.values()) {
+      v.pos = t.apply(v.pos);
+      this.gridInsert(v);
+    }
+    for (const f of this.faces.values()) this.updateFaceNormal(f);
+    const scale = t.uniformScale();
+    for (const [id, c] of this.curves) {
+      if (!c.center || !c.normal) continue;
+      const center = t.apply(c.center);
+      this.curves.set(id, {
+        kind: c.kind,
+        center: scale === null ? undefined : center,
+        normal: scale === null ? undefined : t.applyDir(c.normal).normalize(),
+        radius: scale === null || c.radius === undefined ? undefined : c.radius * scale,
+      });
+    }
+    for (const [id, g] of this.guides) {
+      this.guides.set(id, g.kind === 'line' ? { ...g, point: t.apply(g.point), dir: t.applyDir(g.dir).normalize() } : { ...g, point: t.apply(g.point) });
+    }
+    for (const inst of this.instances.values()) inst.transform = t.multiply(inst.transform);
+  }
+
   // ---- Guides --------------------------------------------------------------
 
   addGuideLine(point: Vec3, dir: Vec3): Guide {
@@ -480,7 +532,7 @@ export class Mesh {
   }
 
   get isEmpty(): boolean {
-    return this.vertices.size === 0;
+    return this.vertices.size === 0 && this.instances.size === 0;
   }
 
   // ---- Serialization -------------------------------------------------------
@@ -500,6 +552,7 @@ export class Mesh {
       ]),
       // Only curves still in use; curves are dropped once their last edge goes.
       guides: [...this.guides.values()].map((g) => [g.id, g.point.toArray(), g.kind === 'line' ? g.dir.toArray() : null]),
+      instances: [...this.instances.values()].map((i) => [i.id, i.definition, i.transform.toArray()]),
       curves: [...this.curves]
         .filter(([id]) => usedCurves.has(id))
         .map(([id, c]) => [id, c.kind, c.center?.toArray() ?? null, c.normal?.toArray() ?? null, c.radius ?? null]),
@@ -519,6 +572,8 @@ export class Mesh {
     this.faces.clear();
     this.curves.clear();
     this.guides.clear();
+    this.instances.clear();
+    for (const [id, definition, m] of json.instances ?? []) this.instances.set(id, { id, definition, transform: new Transform(m) });
     for (const [id, p, d] of json.guides ?? []) {
       const point = new Vec3(p[0], p[1], p[2]);
       this.guides.set(id, d ? { id, kind: 'line', point, dir: new Vec3(d[0], d[1], d[2]) } : { id, kind: 'point', point });

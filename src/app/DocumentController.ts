@@ -58,7 +58,8 @@ export class DocumentController {
     if (!record) return;
     try {
       const doc = parseDocument(record.text);
-      if (doc.model.vertices.length === 0 && (doc.model.guides?.length ?? 0) === 0) return;
+      const root = doc.model.root;
+      if (root.vertices.length === 0 && (root.guides?.length ?? 0) === 0 && (root.instances?.length ?? 0) === 0) return;
       this.load(record.text);
       this.name = record.name;
       this.dirty = record.dirty;
@@ -150,7 +151,7 @@ export class DocumentController {
       fov: c.fov,
       projection: c.projection,
     };
-    return serializeDocument(this.model.mesh.toJSON(), this.format, camera);
+    return serializeDocument(this.model.toDocumentJSON(), this.format, camera);
   }
 
   private confirmDiscard(): boolean {

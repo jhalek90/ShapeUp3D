@@ -1,43 +1,46 @@
-import type { Edge, Face } from '../core/Mesh';
+import type { Edge, Face, Instance } from '../core/Mesh';
 import type { Model } from '../core/Model';
 
-export type Entity = Face | Edge;
+/** Something selectable: a face or edge of the mesh being edited, or a group/component in it. */
+export type Entity = Face | Edge | Instance;
 
-const key = (e: Entity) => ('outer' in e ? `f${e.id}` : `e${e.id}`);
+const key = (e: Entity) => ('outer' in e ? `f${e.id}` : 'v0' in e ? `e${e.id}` : `i${e.id}`);
 
 /**
- * The selected faces and edges. Stored by id so it survives undo/redo and live
- * previews (which rebuild entity objects); entities that disappear drop out.
+ * The selected faces, edges and groups/components, in the mesh being edited.
+ * Stored by id so it survives undo/redo and live previews (which rebuild entity
+ * objects); entities that disappear drop out, and entering or leaving a group
+ * clears it.
  */
 export class Selection {
   private ids = new Set<string>();
   private readonly listeners = new Set<() => void>();
+  private context = '';
 
   constructor(private readonly model: Model) {
     // Live previews rebuild the model constantly; only prune once things settle.
     model.onChange(() => {
-      if (!model.previewing) this.prune();
+      if (model.previewing) return;
+      const context = model.editPath.join('/');
+      if (context !== this.context) {
+        this.context = context;
+        this.clear();
+      } else {
+        this.prune();
+      }
     });
   }
 
   get faces(): Face[] {
-    const out: Face[] = [];
-    for (const id of this.ids) {
-      if (id[0] !== 'f') continue;
-      const f = this.model.mesh.faces.get(Number(id.slice(1)));
-      if (f) out.push(f);
-    }
-    return out;
+    return this.resolve('f', (id) => this.model.active.faces.get(id));
   }
 
   get edges(): Edge[] {
-    const out: Edge[] = [];
-    for (const id of this.ids) {
-      if (id[0] !== 'e') continue;
-      const e = this.model.mesh.edges.get(Number(id.slice(1)));
-      if (e) out.push(e);
-    }
-    return out;
+    return this.resolve('e', (id) => this.model.active.edges.get(id));
+  }
+
+  get instances(): Instance[] {
+    return this.resolve('i', (id) => this.model.active.instances.get(id));
   }
 
   get size(): number {
@@ -87,12 +90,23 @@ export class Selection {
     return () => this.listeners.delete(fn);
   }
 
+  private resolve<T>(kind: string, get: (id: number) => T | undefined): T[] {
+    const out: T[] = [];
+    for (const id of this.ids) {
+      if (id[0] !== kind) continue;
+      const x = get(Number(id.slice(1)));
+      if (x) out.push(x);
+    }
+    return out;
+  }
+
   private prune(): void {
-    const mesh = this.model.mesh;
+    const mesh = this.model.active;
     const before = this.ids.size;
     for (const id of this.ids) {
       const n = Number(id.slice(1));
-      if (id[0] === 'f' ? !mesh.faces.has(n) : !mesh.edges.has(n)) this.ids.delete(id);
+      const exists = id[0] === 'f' ? mesh.faces.has(n) : id[0] === 'e' ? mesh.edges.has(n) : mesh.instances.has(n);
+      if (!exists) this.ids.delete(id);
     }
     if (this.ids.size !== before) this.changed();
   }
